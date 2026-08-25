@@ -54,7 +54,11 @@ wtkit_load_conf() {
     . "$WTKIT_CONF"
   fi
 
-  : "${PROJECT_SLUG:=$(wtkit_slugify "$REPO")}"
+  # Slugify whatever we end up with, not just the default: the slug becomes a
+  # docker project name and a database identifier, and a conf is free to set
+  # something with dots or capitals that neither accepts.
+  : "${PROJECT_SLUG:=$REPO}"
+  PROJECT_SLUG=$(wtkit_slugify "$PROJECT_SLUG")
 
   # Docker is opt-in: a conf must exist AND the repo must have a compose file.
   # Without a conf we cannot know how to write a usable .env, so we stay out of
@@ -125,9 +129,15 @@ wtkit_inherit_env_keys() {
     val=$(grep "^${key}=" "$MAIN_ROOT/.env" 2>/dev/null | head -1 | sed "s/^${key}=//")
     [ -n "$val" ] || continue
     if grep -q "^${key}=" "$envfile" 2>/dev/null; then
-      # BSD/macOS sed needs the empty backup arg; GNU sed does not accept it.
-      sed -i '' "s|^${key}=.*|${key}=${val}|" "$envfile" 2>/dev/null \
-        || sed -i "s|^${key}=.*|${key}=${val}|" "$envfile"
+      # Not sed: an & in the value is replacement syntax there, so a key
+      # containing one is silently corrupted into the whole matched line.
+      # ENVIRON passes both strings through literally (awk -v would still
+      # process backslash escapes).
+      k="$key" v="$val" awk '
+        BEGIN { k = ENVIRON["k"]; v = ENVIRON["v"] }
+        { n = index($0, "=")
+          if (n > 0 && substr($0, 1, n - 1) == k) print k "=" v; else print }
+      ' "$envfile" > "$envfile.wtkit" && mv "$envfile.wtkit" "$envfile"
     else
       printf '%s=%s\n' "$key" "$val" >> "$envfile"
     fi
