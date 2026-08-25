@@ -9,8 +9,10 @@ PROJECT_SLUG="my_app"        # docker project + database name prefix
 # somewhere; omit them and a per-repo window is derived from the repo name.
 WORKSPACE_WEB_BASE=8500          # workspace <n> -> web 8500+n
 WORKSPACE_DB_BASE=5900           #                  db  5900+n
-TASK_WEB_BASE=8100               # task worktrees -> web 8100+
-TASK_DB_BASE=5500                #                   db  5500+
+TASK_WEB_BASE=8100               # task worktrees -> web 8100-8499
+TASK_DB_BASE=5500                #                   db  5500-5899
+TASK_PORT_SPAN=400               # band width; offset is hash(slug) % span
+WORKSPACE_PORT_SPAN=200
 
 # Secrets copied from the main checkout's .env into each worktree's .env.
 INHERIT_ENV_KEYS="OPENAI_API_KEY ANTHROPIC_API_KEY"

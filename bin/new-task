@@ -102,7 +102,8 @@ SAFE=$(printf '%s' "$SLUG" | tr -c 'a-z0-9' '_')
 PROJ="wt_$SAFE"
 DBNAME="wt_$SAFE"
 if [ "$USE_DOCKER" -eq 1 ]; then
-  wtkit_alloc_ports "$TASK_WEB_BASE" "$TASK_DB_BASE" "$(( $(wtkit_hash "$SLUG") % 10 ))"
+  wtkit_alloc_ports "$TASK_WEB_BASE" "$TASK_DB_BASE" \
+    "$(( $(wtkit_hash "$SLUG") % TASK_PORT_SPAN ))" "$TASK_PORT_SPAN" wrap
 fi
 
 # ---- create the worktree ---------------------------------------------------

@@ -76,12 +76,20 @@ wtkit_load_conf() {
   # of two different projects never claim the same pair. Workspaces take the
   # low half of the window, throwaway task worktrees the high half. A conf can
   # pin these explicitly (do that if a project's ports are already documented).
-  local band
+  # Remember whether the conf pinned each band BEFORE we default it: a pinned
+  # band owns its whole range (the historical 8100-8499 task band), while a
+  # hash-derived one is only 20 wide and must not spill into the next repo's.
+  local band ws_pinned=0 task_pinned=0
+  [ -n "${WORKSPACE_WEB_BASE:-}" ] && ws_pinned=1
+  [ -n "${TASK_WEB_BASE:-}" ] && task_pinned=1
   band=$(( $(wtkit_hash "$PROJECT_SLUG") % 50 ))
   : "${WORKSPACE_WEB_BASE:=$(( 8000 + band * 20 ))}"
   : "${WORKSPACE_DB_BASE:=$(( 5300 + band * 20 ))}"
   : "${TASK_WEB_BASE:=$(( WORKSPACE_WEB_BASE + 10 ))}"
   : "${TASK_DB_BASE:=$(( WORKSPACE_DB_BASE + 10 ))}"
+
+  if [ "$task_pinned" -eq 1 ]; then : "${TASK_PORT_SPAN:=400}"; else : "${TASK_PORT_SPAN:=10}"; fi
+  if [ "$ws_pinned" -eq 1 ]; then : "${WORKSPACE_PORT_SPAN:=200}"; else : "${WORKSPACE_PORT_SPAN:=10}"; fi
 
   : "${INHERIT_ENV_KEYS:=}"
   : "${WORKSPACE_INITIAL_PROMPT_FMT:=%s}"
@@ -93,21 +101,25 @@ wtkit_load_conf() {
 # ---- ports ------------------------------------------------------------------
 wtkit_port_busy() { lsof -nP -iTCP:"$1" -sTCP:LISTEN >/dev/null 2>&1; }
 
-# wtkit_alloc_ports <web_base> <db_base> <start_offset>
-# Sets WEB_PORT / DB_PORT to the first free pair at or after the start offset.
+# wtkit_alloc_ports <web_base> <db_base> <start_offset> <span> [wrap|linear]
+# Sets WEB_PORT / DB_PORT to the first free pair, searching <span> offsets.
 # The probe matters because the offset alone is deterministic: two repos, or a
 # stopped stack, can otherwise hand the same pair out twice.
+#   wrap   — walk the whole band modulo <span> (task worktrees: the offset is a
+#            hash, so the search must cover the band, not just run off its end)
+#   linear — count up from <start> (workspaces: the offset is the index n, which
+#            may legitimately exceed the span, and must not alias onto n % span)
 wtkit_alloc_ports() {
-  local web_base="$1" db_base="$2" start="$3" i off
-  for i in $(seq 0 60); do
-    off=$(( start + i ))
+  local web_base="$1" db_base="$2" start="$3" span="${4:-20}" mode="${5:-linear}" i off
+  for i in $(seq 0 "$span"); do
+    if [ "$mode" = "wrap" ]; then off=$(( (start + i) % span )); else off=$(( start + i )); fi
     WEB_PORT=$(( web_base + off ))
     DB_PORT=$(( db_base + off ))
     if ! wtkit_port_busy "$WEB_PORT" && ! wtkit_port_busy "$DB_PORT"; then
       return 0
     fi
   done
-  echo "Could not find a free port pair near ${web_base}+${start} / ${db_base}+${start}." >&2
+  echo "Could not find a free port pair in ${web_base}-$(( web_base + span - 1 )) / ${db_base}-$(( db_base + span - 1 ))." >&2
   return 1
 }
 

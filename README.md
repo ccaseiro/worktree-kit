@@ -35,6 +35,8 @@ WORKSPACE_WEB_BASE=8500          # workspace <n> -> web 8500+n
 WORKSPACE_DB_BASE=5900
 TASK_WEB_BASE=8100               # task worktrees
 TASK_DB_BASE=5500
+TASK_PORT_SPAN=400               # width of the task band (default 400 when pinned)
+WORKSPACE_PORT_SPAN=200
 INHERIT_ENV_KEYS="OPENAI_API_KEY ANTHROPIC_API_KEY"
 WORKSPACE_INITIAL_PROMPT_FMT="/next-task %s"
 FINISH_HINT="Finish with /ship-land or /ship-worktree."
@@ -63,6 +65,11 @@ Every key is optional:
   name, workspaces in the low half and task worktrees in the high half, so
   workspace 1 of two different projects never claims the same pair. Pin them
   explicitly when a project's ports are already documented elsewhere.
+- **No spans** — a band you pin owns a wide range (400 ports for tasks, 200 for
+  workspaces); a hash-derived window is only as wide as the window. A task's
+  offset is `hash(slug) % TASK_PORT_SPAN`, so the span sets how often two
+  concurrent task worktrees want the same pair. The host probe resolves an
+  actual clash either way; the span decides how often it has to.
 - **No hooks** — `write_env` defaults to compose project name plus ports, and
   nothing runs after `up`.
 

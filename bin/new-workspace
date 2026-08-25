@@ -96,7 +96,7 @@ fi
 PROJ="${PROJECT_SLUG}_ws$N"
 DBNAME="${PROJECT_SLUG}_ws$N"
 if [ "$USE_DOCKER" -eq 1 ]; then
-  wtkit_alloc_ports "$WORKSPACE_WEB_BASE" "$WORKSPACE_DB_BASE" "$N"
+  wtkit_alloc_ports "$WORKSPACE_WEB_BASE" "$WORKSPACE_DB_BASE" "$N" "$WORKSPACE_PORT_SPAN" linear
 fi
 
 # ---- create the worktree ---------------------------------------------------
