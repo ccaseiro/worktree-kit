@@ -1,0 +1,151 @@
+#!/usr/bin/env bash
+#
+# remove-workspace — tear down a workspace created by new-workspace: stop and
+# wipe its docker stack, remove the git worktree, and delete the branch.
+#
+# Refuses to remove a workspace that has uncommitted changes OR commits not on
+# origin/main (land it first) unless --force.
+#
+# Ordering is deliberate: `docker compose down -v` runs FROM INSIDE the
+# worktree while its compose file still exists — removing the worktree first
+# would let Compose walk up to the main project and wipe the main stack.
+#
+# Usage:
+#   remove-workspace <n>
+#
+# Options (before or after the index):
+#   --force           Remove even with uncommitted / unshipped work (DISCARDS it).
+#   --yes | -y        Skip the confirmation prompt.
+#   --tmux            Also close the ws-<n> tmux window (default: leave it).
+#   --delete-remote   Also delete origin/<branch> if it still exists.
+#   -h | --help       Show this help.
+#
+set -euo pipefail
+
+WTKIT_LIB="${WTKIT_LIB:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib/wtkit" 2>/dev/null && pwd)}"
+if [ ! -f "${WTKIT_LIB:-}/common.sh" ]; then
+  echo "wtkit library not found (looked in '${WTKIT_LIB:-?}'). Set WTKIT_LIB." >&2
+  exit 1
+fi
+# shellcheck disable=SC1091
+. "$WTKIT_LIB/common.sh"
+
+FORCE=0
+ASSUME_YES=0
+DELETE_REMOTE=0
+USE_TMUX=0
+N=""
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --force) FORCE=1; shift ;;
+    --yes|-y) ASSUME_YES=1; shift ;;
+    --tmux) USE_TMUX=1; shift ;;
+    --delete-remote) DELETE_REMOTE=1; shift ;;
+    -h|--help) sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --) shift ;;
+    -*) echo "Unknown option: $1" >&2; exit 2 ;;
+    *) if [ -z "$N" ]; then N="$1"; else echo "Unexpected argument: $1" >&2; exit 2; fi; shift ;;
+  esac
+done
+
+if ! printf '%s' "$N" | grep -qE '^[0-9]+$'; then
+  echo "Usage: remove-workspace <n>   (n = workspace index)" >&2
+  exit 2
+fi
+
+MAIN_ROOT=$(wtkit_main_root)
+wtkit_load_conf "$MAIN_ROOT"
+WT_DIR="$MAIN_ROOT/.claude/worktrees/workspace-$N"
+
+if [ ! -d "$WT_DIR" ]; then
+  echo "Workspace $N not found: $WT_DIR" >&2
+  exit 1
+fi
+
+BR=$(git -C "$WT_DIR" branch --show-current 2>/dev/null || echo "")
+DIRTY=$(git -C "$WT_DIR" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
+git -C "$MAIN_ROOT" fetch origin main >/dev/null 2>&1 || true
+UNSHIPPED=$(git -C "$WT_DIR" rev-list --count origin/main..HEAD 2>/dev/null || echo 0)
+
+echo "Workspace: $N"
+echo "Worktree:  $WT_DIR"
+echo "Branch:    ${BR:-<detached>}"
+echo "Dirty:     $DIRTY | Unshipped commits: $UNSHIPPED"
+
+# ---- safety gate -----------------------------------------------------------
+if [ "$FORCE" -eq 0 ] && { [ "$DIRTY" -gt 0 ] || [ "$UNSHIPPED" -gt 0 ]; }; then
+  echo "" >&2
+  echo "Refusing: this workspace has uncommitted ($DIRTY) or unshipped ($UNSHIPPED) work." >&2
+  echo "Land it first, or pass --force to DISCARD it." >&2
+  exit 1
+fi
+
+# ---- confirmation ----------------------------------------------------------
+if [ "$ASSUME_YES" -eq 0 ]; then
+  WARN=""
+  { [ "$DIRTY" -gt 0 ] || [ "$UNSHIPPED" -gt 0 ]; } && WARN=" and DISCARD its uncommitted/unshipped work"
+  printf "Remove workspace %s (stack + worktree + branch '%s')%s? [y/N] " "$N" "${BR:-?}" "$WARN"
+  read -r ans
+  case "$ans" in
+    y|Y|yes|YES) : ;;
+    *) echo "Aborted."; exit 0 ;;
+  esac
+fi
+
+# ---- 1. stop + wipe the docker stack (from inside, guarded) ----------------
+if command -v docker >/dev/null 2>&1 && \
+   { [ -f "$WT_DIR/docker-compose.yml" ] || [ -f "$WT_DIR/compose.yaml" ] || [ -f "$WT_DIR/compose.yml" ]; }; then
+  echo "==> Stopping docker stack (down -v)"
+  ( cd "$WT_DIR" && docker compose down -v ) 2>&1 | tail -8 || true
+fi
+
+# ---- 2. remove the worktree ------------------------------------------------
+echo "==> Removing worktree"
+git -C "$MAIN_ROOT" worktree remove --force "$WT_DIR" || {
+  echo "!! git worktree remove failed (root-owned build files?). Trying a plain rm." >&2
+  rm -rf "$WT_DIR" 2>/dev/null || echo "!! could not delete $WT_DIR — remove it manually (maybe sudo)." >&2
+}
+git -C "$MAIN_ROOT" worktree prune
+
+# ---- 3. delete the branch --------------------------------------------------
+if [ -n "$BR" ] && git -C "$MAIN_ROOT" show-ref --verify --quiet "refs/heads/$BR"; then
+  echo "==> Deleting local branch $BR"
+  git -C "$MAIN_ROOT" branch -D "$BR"
+fi
+
+# ---- 4. optionally delete the remote branch --------------------------------
+if [ "$DELETE_REMOTE" -eq 1 ] && [ -n "$BR" ] && \
+   git -C "$MAIN_ROOT" show-ref --verify --quiet "refs/remotes/origin/$BR"; then
+  echo "==> Deleting remote branch origin/$BR"
+  git -C "$MAIN_ROOT" push origin --delete "$BR" 2>&1 | tail -2 || true
+fi
+
+# ---- 5. close the tmux window (only with --tmux) ---------------------------
+# By default the workspace runs in the pane you launched it in, so there is no
+# dedicated window to close. --tmux closes the ws-<n> window, skipping the case
+# where we're running inside it.
+if [ "$USE_TMUX" -eq 1 ] && command -v tmux >/dev/null 2>&1; then
+  WIN="ws-$N"
+  CUR=""
+  [ -n "${TMUX:-}" ] && CUR=$(tmux display-message -p '#{window_name}' 2>/dev/null || echo "")
+  if [ "$CUR" = "$WIN" ]; then
+    TMUX_NOTE="You're in tmux window '$WIN' — close it manually (removing it now would kill this script)."
+  elif tmux list-windows -a -F '#{window_name}' 2>/dev/null | grep -qx "$WIN"; then
+    TARGET=$(tmux list-windows -a -F '#{session_name}:#{window_index} #{window_name}' 2>/dev/null | awk -v w="$WIN" '$2==w{print $1; exit}')
+    [ -n "$TARGET" ] && tmux kill-window -t "$TARGET" 2>/dev/null && TMUX_NOTE="Closed tmux window '$WIN'."
+  fi
+fi
+
+# ---- summary ----------------------------------------------------------------
+cat <<EOF
+
+✅ Workspace $N removed
+
+  Stack:    down -v (volumes wiped)
+  Worktree: $WT_DIR (removed)
+  Branch:   ${BR:-<none>} (deleted$( [ "$DELETE_REMOTE" -eq 1 ] && echo " local + remote" || echo " local" ))
+$( [ -n "${TMUX_NOTE:-}" ] && echo "  tmux:     $TMUX_NOTE" )
+
+The named Claude session transcript ($REPO-$N) is left under ~/.claude/projects (harmless).
+EOF

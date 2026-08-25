@@ -1,0 +1,148 @@
+#!/usr/bin/env bash
+#
+# new-workspace — spin up a long-lived, generic WORKSPACE (an isolated git
+# worktree + optional docker stack) and launch a named, Remote-Control-enabled
+# Claude session for it in the CURRENT pane (pass --tmux for a new tmux window).
+#
+# A workspace is NOT tied to one task. You feed tasks through it with the
+# /ship-land -> /next-task cycle, keeping the session's context across tasks.
+# This is the "amortize setup, keep context" counterpart to new-task (which is
+# a throwaway worktree + fresh session per task). Both coexist.
+#
+# Project-specific bits (docker project name, .env body, post-up command, port
+# band, first-task prompt format) come from <repo>/.claude/workspace.conf.
+# Without that file the workspace is still created and Claude still launches —
+# only the .env/docker layer is skipped.
+#
+# Usage:
+#   new-workspace <n> ["first task description"]
+#
+# With a description, the session starts by running the configured first-task
+# prompt (e.g. `/next-task <description>`) so the workspace comes prepared to
+# start work; without one it opens ready and you drive it yourself.
+#
+# Options (before or after the index):
+#   --no-docker   Skip building/starting the docker stack.
+#   --no-launch   Prepare the workspace but don't start Claude.
+#   --tmux        Launch Claude in a new tmux window instead of this pane.
+#   --no-rc       Launch a plain named session (claude --name) instead of
+#                 enabling Remote Control (use if you're not logged into claude.ai).
+#   --base <ref>  Base the worktree on <ref> (default: origin/main).
+#   -h | --help   Show this help.
+#
+# The Claude session is named "<repo>-<n>" (e.g. rev-portal-1) and, by default,
+# started with Remote Control so you can also drive it from claude.ai / the
+# Claude app. Reattach later from the workspace dir with `claude -c`, or from
+# anywhere with `claude --resume "<repo>-<n>"`.
+#
+set -euo pipefail
+
+WTKIT_LIB="${WTKIT_LIB:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib/wtkit" 2>/dev/null && pwd)}"
+if [ ! -f "${WTKIT_LIB:-}/common.sh" ]; then
+  echo "wtkit library not found (looked in '${WTKIT_LIB:-?}'). Set WTKIT_LIB." >&2
+  exit 1
+fi
+# shellcheck disable=SC1091
+. "$WTKIT_LIB/common.sh"
+
+NO_DOCKER=0
+NO_LAUNCH=0
+NO_RC=0
+USE_TMUX=0
+BASE="origin/main"
+N=""
+PROMPT_ARGS=()   # bare args after the index = the first-task description
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --no-docker) NO_DOCKER=1; shift ;;
+    --no-launch) NO_LAUNCH=1; shift ;;
+    --tmux) USE_TMUX=1; shift ;;
+    --no-rc) NO_RC=1; shift ;;
+    --base) BASE="${2:?--base needs a ref}"; shift 2 ;;
+    -h|--help) sed -n '2,37p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --) shift; while [ $# -gt 0 ]; do PROMPT_ARGS+=("$1"); shift; done ;;
+    -*) echo "Unknown option: $1" >&2; exit 2 ;;
+    *) if [ -z "$N" ]; then N="$1"; else PROMPT_ARGS+=("$1"); fi; shift ;;
+  esac
+done
+PROMPT="${PROMPT_ARGS[*]:-}"
+
+if ! printf '%s' "$N" | grep -qE '^[0-9]+$'; then
+  echo "Usage: new-workspace <n>   (n = workspace index, a positive integer)" >&2
+  exit 2
+fi
+
+# ---- locate the primary (main) checkout + load the repo config -------------
+MAIN_ROOT=$(wtkit_main_root)
+wtkit_load_conf "$MAIN_ROOT"
+
+STACK_UP=0
+WT_DIR="$MAIN_ROOT/.claude/worktrees/workspace-$N"
+BRANCH="workspace/$N"
+NAME="$REPO-$N"
+
+if [ -e "$WT_DIR" ]; then
+  echo "Workspace $N already exists: $WT_DIR" >&2
+  echo "Reattach: cd '$WT_DIR' && claude -c   (or: claude --resume \"$NAME\")" >&2
+  exit 1
+fi
+if git -C "$MAIN_ROOT" show-ref --verify --quiet "refs/heads/$BRANCH"; then
+  echo "Branch already exists: $BRANCH (remove it or pick another index)." >&2
+  exit 1
+fi
+
+# ---- deterministic, collision-checked ports (workspace band) ---------------
+PROJ="${PROJECT_SLUG}_ws$N"
+DBNAME="${PROJECT_SLUG}_ws$N"
+if [ "$USE_DOCKER" -eq 1 ]; then
+  wtkit_alloc_ports "$WORKSPACE_WEB_BASE" "$WORKSPACE_DB_BASE" "$N"
+fi
+
+# ---- create the worktree ---------------------------------------------------
+echo "==> Fetching $BASE and creating workspace $N"
+case "$BASE" in
+  origin/*) git -C "$MAIN_ROOT" fetch origin "${BASE#origin/}" >/dev/null 2>&1 || true ;;
+esac
+git -C "$MAIN_ROOT" worktree add "$WT_DIR" -b "$BRANCH" "$BASE"
+
+[ "$USE_DOCKER" -eq 1 ] && [ "$NO_DOCKER" -eq 0 ] && STACK_UP=1
+wtkit_write_env "$WT_DIR" "new-workspace"
+wtkit_docker_up "$WT_DIR"
+[ "$USE_DOCKER" -eq 1 ] || STACK_UP=0   # docker missing -> nothing was started
+
+# ---- build the Claude command ----------------------------------------------
+# Name goes on --name (not as --remote-control's optional value) so the
+# positional [prompt] stays free for the first task. Remote Control needs a
+# claude.ai login (Pro/Max/Team/Enterprise), not an API key; --no-rc drops it.
+if [ "$NO_RC" -eq 1 ]; then
+  CLAUDE_ARGS=(--name "$NAME")
+else
+  CLAUDE_ARGS=(--remote-control --name "$NAME")
+fi
+FIRST_PROMPT=""
+if [ -n "$PROMPT" ]; then
+  # shellcheck disable=SC2059
+  FIRST_PROMPT=$(printf "$WORKSPACE_INITIAL_PROMPT_FMT" "$PROMPT")
+  CLAUDE_ARGS+=("$FIRST_PROMPT")
+fi
+
+# ---- summary (printed BEFORE launch so it survives the exec below) ---------
+cat <<EOF
+
+✅ Workspace $N ready
+
+  Session:  $NAME  ($( [ "$NO_RC" -eq 1 ] && echo "named, no remote control" || echo "Remote Control enabled — also drivable from claude.ai / app" ))
+  Branch:   $BRANCH  (placeholder — start a task to move onto a feature branch)
+  Worktree: $WT_DIR
+$( [ "$STACK_UP" -eq 1 ] && echo "  App URL:  http://localhost:$WEB_PORT" )
+$( [ "$USE_DOCKER" -eq 1 ] && echo "  Project:  $PROJ  (web:$WEB_PORT db:$DB_PORT)" )
+$( [ -n "$FIRST_PROMPT" ] && echo "  First:    $FIRST_PROMPT  (auto-started)" )
+$( [ "$HAS_CONF" -eq 0 ] && echo "  Config:   none (.claude/workspace.conf absent — no .env, no docker)" )
+
+$( [ -n "$FIRST_PROMPT" ] && echo "The session starts by running that prompt." )
+$( [ -n "$FINISH_HINT" ] && echo "$FINISH_HINT" )
+Reattach later: cd '$WT_DIR' && claude -c   (or: claude --resume "$NAME")
+EOF
+
+wtkit_launch_claude "$WT_DIR" "ws-$N" "workspaces" "${CLAUDE_ARGS[@]}"

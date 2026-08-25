@@ -1,0 +1,45 @@
+# workspace.conf — a working example for a Django + Postgres project.
+#
+# Copy to <repo>/.claude/workspace.conf and adjust. Sourced as bash.
+# Every key is optional; see the README for what each default does.
+
+PROJECT_SLUG="my_app"        # docker project + database name prefix
+
+# Port bands. Pin these when the project's ports are already documented
+# somewhere; omit them and a per-repo window is derived from the repo name.
+WORKSPACE_WEB_BASE=8500          # workspace <n> -> web 8500+n
+WORKSPACE_DB_BASE=5900           #                  db  5900+n
+TASK_WEB_BASE=8100               # task worktrees -> web 8100+
+TASK_DB_BASE=5500                #                   db  5500+
+
+# Secrets copied from the main checkout's .env into each worktree's .env.
+INHERIT_ENV_KEYS="OPENAI_API_KEY ANTHROPIC_API_KEY"
+
+# A first-task description becomes this prompt, so a new workspace starts
+# already working on it. Drop it if the project has no /next-task command.
+WORKSPACE_INITIAL_PROMPT_FMT="/next-task %s"
+
+# Appended to the guidance a new task worktree opens with.
+FINISH_HINT="Finish with /ship-land (ship + merge PR) or /ship-worktree (merge + cleanup)."
+
+# Body of the per-worktree .env. PROJ, DBNAME, WEB_PORT and DB_PORT are set.
+write_env() {
+  cat <<EOF
+COMPOSE_PROJECT_NAME=$PROJ
+WEB_PORT=$WEB_PORT
+DB_PORT=$DB_PORT
+
+POSTGRES_DB=$DBNAME
+POSTGRES_USER=postgres
+POSTGRES_PASSWORD=postgres
+
+OPENAI_API_KEY=
+ANTHROPIC_API_KEY=
+EOF
+}
+
+# Run inside the worktree after `docker compose up -d --build`, retried while
+# the database comes up.
+post_up() {
+  docker compose exec -T web python manage.py migrate
+}
