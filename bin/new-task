@@ -114,8 +114,10 @@ esac
 git -C "$MAIN_ROOT" worktree add "$WT_DIR" -b "$BRANCH" "$BASE"
 
 [ "$USE_DOCKER" -eq 1 ] && [ "$NO_DOCKER" -eq 0 ] && STACK_UP=1
-wtkit_write_env "$WT_DIR" "new-task"
-wtkit_docker_up "$WT_DIR"
+# First run: the image may not exist yet, so ask for the build. Everything
+# below this line is the same convergence start-worktree performs later.
+REBUILD=1
+wtkit_ensure_stack "$WT_DIR" "new-task"
 [ "$USE_DOCKER" -eq 1 ] || STACK_UP=0   # docker missing -> nothing was started
 
 # ---- initial guidance message ----------------------------------------------

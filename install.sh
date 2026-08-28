@@ -18,7 +18,7 @@ SRC=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 PREFIX="${PREFIX:-$HOME/.local}"
 BIN="$PREFIX/bin"
 LIB="$PREFIX/lib/wtkit"
-CMDS=(new-workspace new-task remove-workspace)
+CMDS=(new-workspace new-task start-worktree remove-workspace)
 
 if [ "${1:-}" = "--uninstall" ]; then
   for c in "${CMDS[@]}"; do

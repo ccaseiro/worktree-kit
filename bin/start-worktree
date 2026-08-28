@@ -1,0 +1,164 @@
+#!/usr/bin/env bash
+#
+# start-worktree — bring an existing worktree's docker stack up and print the
+# URL to open. The counterpart to the launchers: they CREATE a worktree and
+# start it, this one starts a worktree that already exists.
+#
+# It is idempotent by design — it converges to "running" from whatever state it
+# finds, instead of assuming a virgin worktree:
+#
+#   no .env yet          -> allocates ports, writes .env, builds, starts
+#   .env but never up    -> starts (compose builds the image if it is missing)
+#   stopped              -> starts
+#   already running      -> starts nothing, just prints the URL
+#
+# So it covers worktrees made by an agent (`isolation: "worktree"`), which
+# arrive with no .env and no stack, AND ones made by new-workspace / new-task,
+# which are already configured and only need waking up.
+#
+# Project-specific bits (docker project name, .env body, post-up command, port
+# band) come from <repo>/.claude/workspace.conf, exactly as for the launchers.
+# Without that file there is no .env/docker layer and this only reports where
+# the worktree is and what it has checked out.
+#
+# Usage:
+#   start-worktree [name | path]
+#
+# With no argument it targets the worktree you are standing in, falling back to
+# the most recently modified one under <repo>/.claude/worktrees/.
+#
+# Options (before or after the name):
+#   --rebuild       Force `docker compose up --build` (after a Dockerfile or
+#                   dependency change). Off by default: reopening a worktree
+#                   should not pay a full image rebuild.
+#   --no-post-up    Skip the conf's post_up hook (migrations, seeding).
+#   --no-docker     Write the .env if missing, but do not touch the stack.
+#   -h | --help     Show this help.
+#
+set -euo pipefail
+
+WTKIT_LIB="${WTKIT_LIB:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib/wtkit" 2>/dev/null && pwd)}"
+if [ ! -f "${WTKIT_LIB:-}/common.sh" ]; then
+  echo "wtkit library not found (looked in '${WTKIT_LIB:-?}'). Set WTKIT_LIB." >&2
+  exit 1
+fi
+# shellcheck disable=SC1091
+. "$WTKIT_LIB/common.sh"
+
+REBUILD=0
+NO_POST_UP=0
+NO_DOCKER=0
+TARGET=""
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --rebuild) REBUILD=1; shift ;;
+    --no-post-up) NO_POST_UP=1; shift ;;
+    --no-docker) NO_DOCKER=1; shift ;;
+    -h|--help) sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --) shift ;;
+    -*) echo "Unknown option: $1" >&2; exit 2 ;;
+    *) if [ -z "$TARGET" ]; then TARGET="$1"; else echo "Unexpected argument: $1" >&2; exit 2; fi; shift ;;
+  esac
+done
+
+# ---- locate the primary (main) checkout + load the repo config -------------
+MAIN_ROOT=$(wtkit_main_root)
+wtkit_load_conf "$MAIN_ROOT"
+WT_ROOT="$MAIN_ROOT/.claude/worktrees"
+
+# ---- resolve the target worktree -------------------------------------------
+# Anchored at MAIN_ROOT, never at the cwd: this is meant to be run from inside
+# a worktree just as often as from the main checkout, and a relative
+# .claude/worktrees/ silently resolves to nothing in the former.
+resolve_target() {
+  local here
+  if [ -n "$TARGET" ]; then
+    if [ -d "$TARGET" ]; then ( cd "$TARGET" && pwd ); return 0; fi
+    if [ -d "$WT_ROOT/$TARGET" ]; then printf '%s' "$WT_ROOT/$TARGET"; return 0; fi
+    echo "Worktree not found: $TARGET" >&2
+    [ -d "$WT_ROOT" ] && { echo "Known worktrees:" >&2; ls -1 "$WT_ROOT" >&2; }
+    return 1
+  fi
+  # No argument: the worktree you are standing in wins over "most recent",
+  # which is almost always what you meant and never surprises.
+  here=$(git rev-parse --show-toplevel 2>/dev/null || echo "")
+  case "$here" in "$WT_ROOT"/*) printf '%s' "$here"; return 0 ;; esac
+  here=$(ls -td "$WT_ROOT"/*/ 2>/dev/null | head -1 || true)
+  [ -n "$here" ] || { echo "No worktrees under $WT_ROOT." >&2; return 1; }
+  printf '%s' "${here%/}"
+}
+WT_DIR=$(resolve_target)
+
+if [ "$(git -C "$WT_DIR" rev-parse --show-toplevel 2>/dev/null || echo)" != "$WT_DIR" ]; then
+  echo "Not a git worktree: $WT_DIR" >&2
+  exit 1
+fi
+NAME=$(basename "$WT_DIR")
+
+# ---- identity + ports ------------------------------------------------------
+# An existing .env wins. Otherwise derive the SAME identity the launcher would
+# have given this worktree, from its directory name — so a workspace whose .env
+# was lost is rebuilt onto its own project and volumes, not a second set.
+PROJ=""; DBNAME=""; WEB_PORT=""; DB_PORT=""
+CONFIGURED=0
+if [ "$USE_DOCKER" -eq 1 ]; then
+  if wtkit_read_env "$WT_DIR"; then
+    CONFIGURED=1
+    DBNAME="$PROJ"
+  else
+    case "$NAME" in
+      workspace-[0-9]*)
+        N="${NAME#workspace-}"
+        PROJ="${PROJECT_SLUG}_ws$N"; DBNAME="$PROJ"
+        wtkit_alloc_ports "$WORKSPACE_WEB_BASE" "$WORKSPACE_DB_BASE" \
+          "$N" "$WORKSPACE_PORT_SPAN" linear
+        ;;
+      *)
+        SAFE=$(printf '%s' "$NAME" | tr -c 'a-z0-9' '_')
+        PROJ="wt_$SAFE"; DBNAME="$PROJ"
+        wtkit_alloc_ports "$TASK_WEB_BASE" "$TASK_DB_BASE" \
+          "$(( $(wtkit_hash "$NAME") % TASK_PORT_SPAN ))" "$TASK_PORT_SPAN" wrap
+        ;;
+    esac
+  fi
+fi
+
+# ---- converge --------------------------------------------------------------
+wtkit_ensure_stack "$WT_DIR" "start-worktree"
+
+case "${WTKIT_STACK_WAS:-absent}" in
+  running) STATE="was already running" ;;
+  stopped) STATE="was stopped, started it" ;;
+  *)       STATE=$( [ "$CONFIGURED" -eq 1 ] && echo "created (.env already there)" || echo "created (.env written)" ) ;;
+esac
+[ "$NO_DOCKER" -eq 1 ] && STATE="not touched (--no-docker)"
+
+# ---- summary ---------------------------------------------------------------
+# Built line by line rather than as one heredoc: a `$( ... )` that evaluates to
+# nothing still leaves its newline behind, and this command's whole job is to
+# print a short, readable status.
+say() { [ -n "$1" ] && printf '%s\n' "$1"; return 0; }
+
+echo ""
+echo "✅ Worktree $NAME"
+echo ""
+say "  Path:     $WT_DIR"
+say "  Branch:   $(git -C "$WT_DIR" branch --show-current 2>/dev/null || echo "(detached)")"
+say "  Commit:   $(git -C "$WT_DIR" log --oneline -1 2>/dev/null || echo "?")"
+if [ "$USE_DOCKER" -eq 1 ]; then
+  [ "$NO_DOCKER" -eq 0 ] && say "  App URL:  http://localhost:$WEB_PORT"
+  say "  Project:  $PROJ  (web:$WEB_PORT db:$DB_PORT)"
+  say "  Stack:    $STATE"
+else
+  say "  Config:   no docker layer (.claude/workspace.conf absent, or no compose file)"
+fi
+
+if [ "$USE_DOCKER" -eq 1 ] && [ "$NO_DOCKER" -eq 0 ]; then
+  cat <<EOF
+
+Stop it again:
+  cd '$WT_DIR' && docker compose stop   # keeps containers + data
+  cd '$WT_DIR' && docker compose down   # removes containers, keeps the DB volume
+EOF
+fi

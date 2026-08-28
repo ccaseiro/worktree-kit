@@ -12,6 +12,11 @@
 #                   PROJ, DBNAME, WEB_PORT, DB_PORT, WT_DIR, MAIN_ROOT are set.
 #   post_up()     — run inside the worktree after `docker compose up`, retried
 #                   until it succeeds (migrations, seeding, …).
+#
+# Flags a caller may set (all default to 0):
+#   NO_DOCKER     — write the .env but never touch the stack.
+#   NO_POST_UP    — bring the stack up but skip the post_up hook.
+#   REBUILD       — pass --build to `docker compose up` (force an image rebuild).
 
 # ---- small utilities --------------------------------------------------------
 wtkit_hash() { printf '%s' "$1" | cksum | cut -d' ' -f1; }
@@ -156,6 +161,23 @@ wtkit_inherit_env_keys() {
   done
 }
 
+# Read one KEY's value out of an env file. Deliberately the same shape as the
+# reader in wtkit_inherit_env_keys.
+wtkit_env_get() { grep "^$2=" "$1" 2>/dev/null | head -1 | sed "s/^$2=//"; }
+
+# wtkit_read_env <wt_dir> — load PROJ / WEB_PORT / DB_PORT from an existing
+# .env, and fail if there is none. Once a worktree has an .env, that file is the
+# source of truth: re-deriving the ports would hand a running stack a second
+# identity and orphan its volumes.
+wtkit_read_env() {
+  local envfile="$1/.env" v
+  [ -f "$envfile" ] || return 1
+  v=$(wtkit_env_get "$envfile" COMPOSE_PROJECT_NAME); [ -n "$v" ] && PROJ="$v"
+  v=$(wtkit_env_get "$envfile" WEB_PORT);             [ -n "$v" ] && WEB_PORT="$v"
+  v=$(wtkit_env_get "$envfile" DB_PORT);              [ -n "$v" ] && DB_PORT="$v"
+  return 0
+}
+
 # wtkit_write_env <wt_dir> <generated-by>
 wtkit_write_env() {
   local wt_dir="$1" by="$2" envfile="$1/.env"
@@ -182,8 +204,17 @@ wtkit_docker_up() {
     USE_DOCKER=0
     return 0
   fi
-  echo "==> Building + starting docker stack ($PROJ)"
-  ( cd "$wt_dir" && docker compose up -d --build )
+  # --build only on request. The launchers ask for it (first run, image may not
+  # exist yet); merely reopening a worktree should not pay a full rebuild.
+  # `up -d` still builds on its own when the image is missing.
+  if [ "${REBUILD:-0}" -eq 1 ]; then
+    echo "==> Building + starting docker stack ($PROJ)"
+    ( cd "$wt_dir" && docker compose up -d --build )
+  else
+    echo "==> Starting docker stack ($PROJ)"
+    ( cd "$wt_dir" && docker compose up -d )
+  fi
+  [ "${NO_POST_UP:-0}" -eq 0 ] || { echo "==> Skipping post_up (--no-post-up)"; return 0; }
   declare -F post_up >/dev/null 2>&1 || return 0
   echo "==> Running post_up (retrying while the stack comes up)"
   for i in $(seq 1 10); do
@@ -191,6 +222,66 @@ wtkit_docker_up() {
     sleep 3
   done
   echo "!! post_up did not succeed; run it manually inside $wt_dir" >&2
+}
+
+# ---- converging a worktree's stack ------------------------------------------
+# True when this worktree's compose project has at least one RUNNING container.
+wtkit_stack_running() {
+  local out
+  command -v docker >/dev/null 2>&1 || return 1
+  out=$( cd "$1" && docker compose ps --status running -q 2>/dev/null ) || return 1
+  [ -n "$out" ]
+}
+
+# True when the project has containers at all, running or not.
+wtkit_stack_exists() {
+  local out
+  command -v docker >/dev/null 2>&1 || return 1
+  out=$( cd "$1" && docker compose ps -aq 2>/dev/null ) || return 1
+  [ -n "$out" ]
+}
+
+# wtkit_ensure_stack <wt_dir> <generated-by>
+#
+# Idempotent: converges the worktree to "stack running" from ANY starting state
+# — no .env, .env but never started, stopped, or already up. One code path
+# serves both the launchers (always the first state) and start-worktree (any of
+# them), which is what keeps a second, drifting implementation from existing.
+#
+# The caller owns PROJ / DBNAME / WEB_PORT / DB_PORT: either freshly allocated
+# (launchers) or read back with wtkit_read_env (start-worktree).
+#
+# Reports what it found in WTKIT_STACK_WAS: absent | stopped | running.
+wtkit_ensure_stack() {
+  local wt_dir="$1" by="$2" p
+  WTKIT_STACK_WAS=absent
+  [ "${USE_DOCKER:-0}" -eq 1 ] || return 0
+
+  [ -f "$wt_dir/.env" ] || wtkit_write_env "$wt_dir" "$by"
+
+  if wtkit_stack_running "$wt_dir"; then
+    WTKIT_STACK_WAS=running
+  elif wtkit_stack_exists "$wt_dir"; then
+    WTKIT_STACK_WAS=stopped
+  fi
+
+  # A port held by SOMETHING ELSE is a real clash; a port held by this
+  # worktree's own running containers is not. Conflating the two makes the
+  # check refuse precisely when everything is already fine, so the probe only
+  # runs when our own stack is not the one listening.
+  if [ "$WTKIT_STACK_WAS" != "running" ] && [ "${NO_DOCKER:-0}" -eq 0 ]; then
+    for p in "${WEB_PORT:-}" "${DB_PORT:-}"; do
+      [ -n "$p" ] || continue
+      if wtkit_port_busy "$p"; then
+        echo "!! Port $p is in use by another process." >&2
+        echo "   $wt_dir/.env is the source of truth for this worktree's ports," >&2
+        echo "   so they are not silently reallocated. Free the port or edit that file." >&2
+        return 1
+      fi
+    done
+  fi
+
+  wtkit_docker_up "$wt_dir"
 }
 
 # ---- launching Claude -------------------------------------------------------

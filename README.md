@@ -7,6 +7,7 @@ own isolated git worktree and docker stack.
 |---|---|
 | `new-workspace <n>` | A **long-lived** workspace you feed many tasks through, keeping one session's context. Named, Remote-Control-enabled Claude session `<repo>-<n>`. |
 | `new-task <slug>` | A **throwaway** worktree plus a fresh session, for one independent task. |
+| `start-worktree [name]` | Brings an **existing** worktree's stack up and prints its URL. Idempotent — configures, starts, or just reports, depending on what it finds. |
 | `remove-workspace <n>` | Tears a workspace down safely: stack `down -v` → worktree → branch. Refuses if there is uncommitted or unshipped work. |
 
 Worktrees live under `<repo>/.claude/worktrees/<name>`, each with its own
@@ -80,11 +81,46 @@ The conf is read from the main checkout, falling back to the current worktree
 when the main checkout has none — so a branch that adds or edits it takes
 effect before it lands.
 
+## Reopening a worktree
+
+`new-workspace` and `new-task` create a worktree and start it. `start-worktree`
+is for one that already exists — you came back the next day, or an agent left a
+worktree behind that was never configured at all:
+
+```bash
+start-worktree              # the one you are standing in
+start-worktree workspace-2  # or by name / path
+```
+
+It converges to "running" from whatever state it finds, so there is only one
+command to remember rather than one per case:
+
+| Found | Does |
+|---|---|
+| no `.env` | allocates ports, writes `.env`, builds, starts |
+| `.env`, never started | starts (compose builds the image if it is missing) |
+| stopped | starts |
+| already running | nothing — prints the URL |
+
+A worktree with no `.env` gets the same identity its launcher would have given
+it, derived from the directory name: `workspace-<n>` lands in the workspace
+band, anything else in the task band. Once an `.env` exists it is the source of
+truth and the ports are never silently reallocated — a port held by a *foreign*
+process is reported, not routed around.
+
+`post_up` runs on every start, not just the first, which is what picks up
+migrations after the branch moves.
+
+`examples/commands/open-worktree.md` is a matching Claude Code slash command —
+a thin wrapper, so the logic stays in one place instead of being restated in
+prose that drifts.
+
 ## Flags
 
 ```
 new-workspace <n> ["first task"]   --no-docker --no-launch --tmux --no-rc --base <ref>
 new-task <slug> ["prompt"]         --no-docker --no-launch --tmux --base <ref> --prefix <p>
+start-worktree [name|path]         --rebuild --no-post-up --no-docker
 remove-workspace <n>               --force --yes --tmux --delete-remote
 ```
 
