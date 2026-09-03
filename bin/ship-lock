@@ -1,0 +1,162 @@
+#!/usr/bin/env bash
+#
+# ship-lock — the cross-worktree advisory lock /ship-land serializes on.
+#
+# Two /ship-land runs in parallel worktrees both bump VERSION and CHANGELOG;
+# landed at once they collide on exactly those lines. This is the guard that
+# makes a second cooperating run wait instead of colliding.
+#
+# Every git worktree shares one common git dir, so a lock placed there is
+# visible from all of them. The lock itself is a DIRECTORY created with mkdir
+# — the one atomic create-or-fail primitive macOS offers, having no flock.
+# The path is inside the repo's own common git dir, so the lock is
+# per-repository and two projects can never block each other.
+#
+# It is ADVISORY: it serializes callers that cooperate, not `git` itself, not
+# /ship-worktree, and not a human editing VERSION by hand.
+#
+# Usage:
+#   ship-lock acquire [--steal]    ACQUIRED RUN_TOKEN=<t> | LOCK_BUSY | LOCK_CORRUPT | LOCK_ERROR
+#   ship-lock status               holder + age, then STILL_HELD | LOCK_FREE | LOCK_CORRUPT
+#   ship-lock release --token <t>  RELEASED | ALREADY_GONE | TOKEN_MISMATCH
+#
+# Ownership is per-RUN, carried by the caller as the RUN_TOKEN printed at
+# acquire — never inferred from anything on disk. That is deliberate: a
+# per-worktree token file would let a second run in the same worktree free the
+# first run's live lock. ship-land.mytoken is written as a breadcrumb for a
+# human debugging a stuck lock; release does not consult it.
+#
+# --steal is for a lock whose holder the HUMAN has judged dead. It does NOT
+# verify that. Pass it only on an initial acquire, never on a re-acquire after
+# contention — a steal that loses the race would otherwise become a repeat
+# stealer of the next legitimate holder.
+set -euo pipefail
+
+resolve() {
+  COMMON_DIR=$(git rev-parse --git-common-dir 2>/dev/null) || COMMON_DIR=""
+  if [ -z "$COMMON_DIR" ]; then
+    echo "LOCK_UNRESOLVABLE — not in a git repo, or the lock path cannot be resolved."
+    echo "The lock was NOT touched. An empty path must never read as 'already gone'."
+    exit 1
+  fi
+  case "$COMMON_DIR" in /*) : ;; *) COMMON_DIR="$(git rev-parse --show-toplevel)/$COMMON_DIR" ;; esac
+  LOCK="$COMMON_DIR/ship-land.lock"
+
+  # The git dir can be relative (".git"), so anchor the breadcrumb under the
+  # toplevel or a cwd change between calls would point it somewhere else.
+  GITDIR=$(git rev-parse --git-dir 2>/dev/null) || GITDIR=""
+  if [ -z "$GITDIR" ]; then echo "LOCK_UNRESOLVABLE — cannot resolve the git dir."; exit 1; fi
+  case "$GITDIR" in /*) : ;; *) GITDIR="$(git rev-parse --show-toplevel)/$GITDIR" ;; esac
+  MYTOKEN_FILE="$GITDIR/ship-land.mytoken"
+}
+
+show_holder() {
+  local now he age
+  now=$(date +%s)
+  # A missing or empty epoch counts as ANCIENT (0), never as "now". A crash
+  # between mkdir and the epoch write must surface as a huge age so the
+  # caller's "probably orphaned" threshold can fire; an age pinned at 0 would
+  # deadlock every other worktree silently.
+  he=$(cat "$LOCK/epoch" 2>/dev/null || true); he=${he:-0}
+  age=$(( (now - he) / 60 ))
+  echo "Lock held by $(cat "$LOCK/worktree" 2>/dev/null || true) ($(cat "$LOCK/branch" 2>/dev/null || true))"
+  echo "  since $(cat "$LOCK/started" 2>/dev/null || true), ${age} min ago"
+}
+
+write_meta() {
+  # epoch FIRST, immediately after mkdir: it is the recovery-critical field
+  # (see show_holder).
+  date +%s > "$LOCK/epoch"
+  local token
+  token="${RANDOM}${RANDOM}-$(date +%s)-$$"
+  printf '%s\n' "$(git rev-parse --show-toplevel)"   > "$LOCK/worktree"
+  printf '%s\n' "$(git rev-parse --abbrev-ref HEAD)" > "$LOCK/branch"
+  date '+%Y-%m-%d %H:%M:%S'                          > "$LOCK/started"
+  printf '%s\n' "$token"                             > "$LOCK/token"
+  printf '%s\n' "$token"                             > "$MYTOKEN_FILE"
+  echo "ACQUIRED RUN_TOKEN=$token"
+}
+
+cmd_acquire() {
+  local want_steal="$1"
+  # --steal removes ANY existing path: a held dir, or a corrupt plain file that
+  # would otherwise wedge every future mkdir.
+  if [ "$want_steal" = yes ] && [ -e "$LOCK" ]; then
+    echo "!! --steal: forcibly removing the existing lock at $LOCK"
+    if [ -d "$LOCK" ]; then show_holder; fi
+    echo "!! ship-lock does NOT confirm the holder is dead — YOU are asserting it."
+    echo "!! If that session is still shipping, you have just re-armed the double-bump."
+    rm -rf "$LOCK"
+  fi
+
+  if mkdir "$LOCK" 2>/dev/null; then
+    write_meta
+  elif [ -d "$LOCK" ]; then
+    show_holder
+    echo "LOCK_BUSY — another run holds the lock; you did NOT acquire it."
+  elif [ -e "$LOCK" ]; then
+    echo "LOCK_CORRUPT — $LOCK exists but is not a directory, so mkdir can never"
+    echo "succeed. This is NOT a held lock. Clear it with 'ship-lock acquire --steal'"
+    echo "or remove the path by hand, then retry."
+  else
+    echo "LOCK_ERROR — mkdir failed with nothing at $LOCK: a permissions or"
+    echo "missing-parent problem, NOT a held lock. --steal will not help."
+  fi
+}
+
+cmd_status() {
+  if [ -d "$LOCK" ]; then
+    show_holder
+    echo "STILL_HELD"
+  elif [ -e "$LOCK" ]; then
+    echo "LOCK_CORRUPT — a non-directory is wedging $LOCK; there is no real holder."
+  else
+    echo "LOCK_FREE"
+  fi
+}
+
+cmd_release() {
+  local token="$1"
+  if [ -z "$token" ]; then
+    echo "TOKEN_MISSING — pass the RUN_TOKEN printed at acquire:"
+    echo "  ship-lock release --token <t>"
+    exit 2
+  fi
+  if [ ! -e "$LOCK" ]; then
+    rm -f "$MYTOKEN_FILE"
+    echo "ALREADY_GONE — nothing to release."
+    return 0
+  fi
+  local held
+  held=$(cat "$LOCK/token" 2>/dev/null || true)
+  # Residual TOCTOU, ACCEPTED: between this read and the rm below, another run
+  # could --steal and reacquire, and we would delete THEIR lock. Not fixed —
+  # --steal is human-invoked and rare, and this lock is advisory. We do not
+  # claim the compare-then-delete is atomic.
+  if [ "$token" = "$held" ]; then
+    rm -rf "$LOCK"
+    rm -f "$MYTOKEN_FILE"
+    echo "RELEASED ($(git rev-parse --abbrev-ref HEAD))"
+  else
+    echo "TOKEN_MISMATCH — NOT released. Either this run never acquired, or the"
+    echo "lock was stolen and reacquired by another run. Left as-is."
+  fi
+}
+
+ACTION="${1:-}"; shift || true
+STEAL=no; TOKEN=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --steal) STEAL=yes; shift ;;
+    --token) TOKEN="${2:-}"; shift 2 ;;
+    *) echo "ship-lock: unknown argument: $1" >&2; exit 2 ;;
+  esac
+done
+
+case "$ACTION" in
+  acquire) resolve; cmd_acquire "$STEAL" ;;
+  status)  resolve; cmd_status ;;
+  release) resolve; cmd_release "$TOKEN" ;;
+  -h|--help|"") sed -n '3,33p' "$0" | sed 's/^#\{1,\} \{0,1\}//' ;;
+  *) echo "ship-lock: unknown action: $ACTION (acquire|status|release)" >&2; exit 2 ;;
+esac

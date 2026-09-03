@@ -45,3 +45,51 @@ EOF
 post_up() {
   docker compose exec -T web python manage.py migrate
 }
+
+# ---------------------------------------------------------------------------
+# Keys the slash commands read (via `wtconf`). All optional; every default
+# fails safe, so a repo that sets none of these still works.
+# ---------------------------------------------------------------------------
+
+# /ship-land: what to merge into, and how. Default: main, --merge.
+BASE_BRANCH="main"
+MERGE_METHOD="--merge"            # or --squash / --rebase
+
+# /ship-land: the skill that actually ships (tests, review, version bump,
+# changelog, PR). Empty means this project has not adopted one and /ship-land
+# refuses rather than guessing. "/ship" is gstack's; point it at your own if
+# you have one.
+SHIP_SKILL="/ship"
+
+# /ship-land docs-only fast path: globs whose changes THIS project's test suite
+# provably cannot observe. Space-separated, matched against repo-relative
+# paths. Unset (the default) means the suite always runs.
+#
+# These are shell case globs, NOT gitignore patterns: `*` crosses `/`, so
+# "docs/*" also matches docs/sub/nested.md.
+#
+# The only test for membership is "can the suite observe this file?" Keep out
+# anything that ships behavior — source, templates, translations asserted in
+# tests, dependency manifests, Dockerfile, compose, infra — however text-like
+# it looks. Note that adding your agent-tooling directory here means tooling
+# changes reach an auto-merge with only the review as a gate; that is a real
+# trade, made knowingly.
+INERT_PATHS="docs/* CLAUDE.md PRD.md progress.md DESIGN.md TODOS.md CHANGELOG.md README.md .claude/*"
+
+# /ship-land version policy. FLOOR is the lowest segment a normal ship may
+# bump; RESERVED names a segment /ship-land must never land, because it belongs
+# to out-of-band hotfixes branched from a deployed tag. Both unset = let the
+# ship skill decide.
+VERSION_BUMP_FLOOR="patch"
+RESERVED_VERSION_SEGMENT="micro"
+
+# /next-task step 5: the entry-point menu it offers, and the only names its
+# bare-/skill shorthand may route to. Keep destructive commands (deploy,
+# rollback, push, ship*) OUT — a bug report often starts with one, e.g.
+# "/deploy fails on staging", and that must stay description.
+TASK_ENTRY_SKILLS="feat fix spec investigate qa review plan-eng-review plan-ceo-review"
+
+# /next-task step 4: paths whose change between the old and new base means the
+# container image must be rebuilt, not just restarted. Unset = never rebuild
+# automatically.
+REBUILD_TRIGGER_PATHS="requirements.txt requirements-dev.txt Dockerfile"

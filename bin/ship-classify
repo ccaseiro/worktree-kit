@@ -1,0 +1,107 @@
+#!/usr/bin/env bash
+#
+# ship-classify — decide whether a branch's diff is provably inert to the app,
+# i.e. whether /ship-land may take the docs-only fast path and skip the test
+# suite. A test suite cannot observe a change to prose or agent tooling, so
+# running it there is ceremony rather than coverage.
+#
+# It is an ALLOWLIST and it FAILS CLOSED. It refuses to report `yes` when:
+#   - the project declares no INERT_PATHS (the default — never skips),
+#   - the base ref or repo root will not resolve,
+#   - the diff is empty ("nothing to classify" is not evidence of safety),
+#   - any single changed path falls outside the allowlist.
+#
+# INERT_PATHS lives in .claude/workspace.conf: space-separated globs matched
+# against repo-relative paths, e.g.
+#   INERT_PATHS="docs/* CLAUDE.md README.md CHANGELOG.md .claude/*"
+#
+# Choose them on one test only: can this project's suite observe the file? A
+# path that ships behavior (source, templates, translations asserted in tests,
+# dependency manifests, container or infra definitions) must stay OUT, however
+# text-like it looks.
+#
+# Usage:  ship-classify [--base <ref>]     (default: origin/<BASE_BRANCH>)
+# Prints one line per changed file, then the sentinel INERT_DIFF: yes|no
+set -euo pipefail
+# Globbing OFF for the whole script. INERT_PATHS is iterated unquoted (to word
+# split it), and unquoted expansion is ALSO subject to pathname expansion: with
+# globbing on, a pattern like docs/* silently expands against the current
+# directory into the files that happen to exist there, so the loop compares
+# against literal filenames instead of the pattern. The observable symptom was
+# the same file classifying differently depending on the cwd -- the exact class
+# of bug the `git -C "$ROOT"` anchoring below exists to prevent. Nothing here
+# needs globbing; `case` patterns are unaffected by -f.
+set -f
+
+HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+WTCONF="$HERE/wtconf"
+[ -x "$WTCONF" ] || WTCONF="wtconf"
+eval "$("$WTCONF" --agent)"
+
+BASE=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --base) BASE="${2:-}"; shift 2 ;;
+    *) echo "ship-classify: unknown argument: $1" >&2; exit 2 ;;
+  esac
+done
+[ -n "$BASE" ] || BASE="origin/$BASE_BRANCH"
+
+ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || ROOT=""
+BASE_REF=$(git merge-base "$BASE" HEAD 2>/dev/null) || BASE_REF=""
+
+# Every flag below is load-bearing:
+#   -C "$ROOT"            `git ls-files --others` is CWD-scoped (unlike git
+#                         diff), so running this from docs/ once hid every
+#                         untracked file elsewhere in the tree — an untracked
+#                         source file classified as inert. Anchoring at the
+#                         toplevel also neutralizes a user's diff.relative.
+#   core.quotePath=false  a path like docs/decisão.md is otherwise emitted as
+#                         "docs/decis\303\243o.md", and the leading quote
+#                         defeats a docs/* glob.
+#   --no-renames          a rename yields BOTH the old and new path; a single
+#                         "R old -> new" string would match neither pattern.
+#   ls-files --others     lists untracked files individually. `git status
+#                         --porcelain` without -uall collapses a whole new
+#                         directory into one entry, hiding its contents behind
+#                         an inert-looking prefix.
+# A function, not a G="git -C …" variable: the shell would treat the whole
+# string as one command name and every call would fail.
+g() { git -C "$ROOT" -c core.quotePath=false "$@"; }
+
+CHANGED=""
+if [ -n "$BASE_REF" ] && [ -n "$ROOT" ]; then
+  CHANGED=$( { g diff --name-only --no-renames "$BASE_REF" HEAD
+               g diff --name-only --no-renames HEAD
+               g diff --name-only --no-renames --cached
+               g ls-files --others --exclude-standard --full-name -- :/; } | sort -u )
+fi
+
+INERT=no   # only an affirmative full classification may set this to yes
+if [ -z "$ROOT" ] || [ -z "$BASE_REF" ]; then
+  echo "INERT_DIFF: no  (cannot resolve $BASE or the repo root — refusing to classify)"
+elif [ -z "$INERT_PATHS" ]; then
+  echo "INERT_DIFF: no  (no INERT_PATHS in workspace.conf — this project never skips)"
+elif [ -z "$CHANGED" ]; then
+  echo "INERT_DIFF: no  (empty diff — nothing to classify)"
+else
+  INERT=yes
+  echo "--- diff classification ---"
+  while IFS= read -r f; do
+    if [ -z "$f" ]; then continue; fi
+    hit=no
+    for pat in $INERT_PATHS; do
+      # $pat is expanded AS A PATTERN by case — that is what makes the
+      # allowlist configurable instead of hardcoded per project.
+      case "$f" in $pat) hit=yes; break ;; esac
+    done
+    if [ "$hit" = yes ]; then
+      echo "  inert         $f"
+    else
+      echo "  APP-RELEVANT  $f"; INERT=no
+    fi
+  done <<INNER
+$CHANGED
+INNER
+  echo "INERT_DIFF: $INERT"
+fi

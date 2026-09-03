@@ -21,9 +21,14 @@ git clone https://github.com/ccaseiro/worktree-kit ~/Developer/worktree-kit
 ~/Developer/worktree-kit/install.sh
 ```
 
-It symlinks `bin/*` into `~/.local/bin` and `lib/wtkit` into `~/.local/lib`,
-so `git pull` here updates every project at once. Make sure `~/.local/bin` is
-on your `PATH`. Undo with `./install.sh --uninstall`.
+It symlinks `bin/*` into `~/.local/bin`, `lib/wtkit` into `~/.local/lib`, and
+`examples/commands/*.md` into `~/.claude/commands` (user scope, so they work in
+every project), so `git pull` here updates everything at once. Make sure
+`~/.local/bin` is on your `PATH`. Skip the slash commands with
+`./install.sh --no-commands`; undo everything with `./install.sh --uninstall`.
+
+A slash command that is already a *real file* in `~/.claude/commands` is never
+clobbered — the installer says it skipped it and leaves your version alone.
 
 ## Per-project setup
 
@@ -115,6 +120,61 @@ migrations after the branch moves.
 a thin wrapper, so the logic stays in one place instead of being restated in
 prose that drifts.
 
+## Slash commands
+
+Two Claude Code commands ship with the kit, installed at user scope so they
+work in any repo. They are the same shape as everything else here: the logic
+lives in scripts, and the project's facts live in `workspace.conf`.
+
+| Command | Does |
+|---|---|
+| `/next-task <desc>` | Resets the **current** worktree to a fresh branch off the base and hands off — keeping the session's context. Use it after `/ship-land`, which leaves the worktree behind. |
+| `/ship-land` | Runs the project's ship skill on the current branch, then merges the PR. Serializes itself across worktrees so two runs cannot collide on `VERSION`/`CHANGELOG.md`. |
+
+They lean on three helpers you can also run by hand:
+
+- **`wtconf`** reads one `workspace.conf` key with the defaults the commands
+  expect. `wtconf --agent` prints the whole agent-facing key set, shell-quoted
+  for `eval`.
+- **`ship-lock`** is the cross-worktree advisory lock. It lives in the repo's
+  *common* git dir, so every worktree of that repo sees the same lock and no
+  other project is affected. `ship-lock --help` documents the sentinels and the
+  accepted failure modes; `ship-lock status` shows the current holder and age.
+- **`ship-classify`** decides whether a branch's diff is provably inert to the
+  app, i.e. whether the test suite can be skipped. It is an allowlist driven by
+  `INERT_PATHS` and it fails closed: no `INERT_PATHS`, an unresolvable base, an
+  empty diff, or one unrecognized path all mean "run the suite".
+
+### Keys the commands read
+
+Every one is optional, and every default fails safe.
+
+| Key | Default | Used by |
+|---|---|---|
+| `BASE_BRANCH` | `main` | both |
+| `MERGE_METHOD` | `--merge` | `/ship-land` |
+| `SHIP_SKILL` | `/ship` | `/ship-land` — empty makes it refuse rather than guess |
+| `INERT_PATHS` | *(none)* | `/ship-land` — none means the suite always runs |
+| `VERSION_BUMP_FLOOR` | *(none)* | `/ship-land` — lowest segment a normal ship may bump |
+| `RESERVED_VERSION_SEGMENT` | *(none)* | `/ship-land` — a segment it must never land (hotfix lane) |
+| `TASK_ENTRY_SKILLS` | *(none)* | `/next-task` — the entry menu, and the only `/skill` shorthands it will route |
+| `REBUILD_TRIGGER_PATHS` | *(none)* | `/next-task` — paths whose change means rebuild, not just restart |
+
+### Does this need gstack?
+
+`/next-task` does not: it is git plus the conf, and works in any repo.
+
+`/ship-land` needs *a* ship skill, named by `SHIP_SKILL`. The default `/ship`
+is [gstack](https://github.com/gstack)'s, which is language-agnostic — it
+detects the test command and accepts either a 4-digit or a plain-semver
+`VERSION` — but it does require the repo to adopt `VERSION`, `CHANGELOG.md` and
+a `gh` PR flow. A project that has not adopted a ship workflow should leave
+`SHIP_SKILL` empty; `/ship-land` then stops and says so instead of invoking a
+command that is not there.
+
+The lock and the classifier have no such dependency — they are useful under any
+ship workflow, including a hand-rolled one.
+
 ## Flags
 
 ```
@@ -122,6 +182,10 @@ new-workspace <n> ["first task"]   --no-docker --no-launch --tmux --no-rc --base
 new-task <slug> ["prompt"]         --no-docker --no-launch --tmux --base <ref> --prefix <p>
 start-worktree [name|path]         --rebuild --no-post-up --no-docker
 remove-workspace <n>               --force --yes --tmux --delete-remote
+
+wtconf <KEY> [default] | --agent | --keys
+ship-lock acquire [--steal] | status | release --token <t>
+ship-classify [--base <ref>]
 ```
 
 Both launchers hand the **current pane** to Claude by default; `--tmux` opens
@@ -131,4 +195,5 @@ login rather than an API key.
 ## Requirements
 
 macOS or Linux, bash, git, the `claude` CLI, and `lsof` for the port probe.
-Docker only if a project's conf uses it. `tmux` only for `--tmux`.
+Docker only if a project's conf uses it. `tmux` only for `--tmux`. `gh` only
+for `/ship-land`.

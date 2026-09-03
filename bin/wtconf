@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+#
+# wtconf — read one .claude/workspace.conf key, with the defaults the agent
+# commands (/next-task, /ship-land) rely on.
+#
+# The conf is resolved exactly as the launchers resolve it — the main checkout
+# first, the current worktree as a fallback — so a branch that adds or edits
+# the conf takes effect before it lands.
+#
+# Usage:
+#   wtconf BASE_BRANCH            # -> main
+#   wtconf INERT_PATHS            # -> "" when the project declared none
+#   wtconf FOO fallback           # -> any conf key, with a fallback
+#   wtconf --agent                # -> shell-quoted KEY=value lines, for eval
+#   wtconf --keys                 # -> the agent-facing key names
+#
+# Every key is optional, and every default is chosen to FAIL SAFE in a repo
+# that has no conf at all: no inert paths (so the test suite is never
+# skipped), no entry skills (so no menu offers a command that does not
+# exist), no rebuild triggers (so an image is never rebuilt unasked).
+set -euo pipefail
+
+LIB="${WTKIT_LIB:-$HOME/.local/lib/wtkit}"
+if [ ! -f "$LIB/common.sh" ]; then
+  LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib/wtkit" && pwd)"
+fi
+# shellcheck disable=SC1091
+. "$LIB/common.sh"
+
+MAIN_ROOT=$(wtkit_main_root) || exit 1
+wtkit_load_conf "$MAIN_ROOT"
+
+# The agent-facing key set. The defaults live HERE rather than in common.sh so
+# the launchers and the slash commands stay independently versionable.
+: "${BASE_BRANCH:=main}"                # branch /ship-land merges into
+: "${MERGE_METHOD:=--merge}"            # gh pr merge flag: --merge|--squash|--rebase
+: "${INERT_PATHS:=}"                    # globs the test suite cannot observe
+: "${SHIP_SKILL:=/ship}"                # the skill /ship-land runs; empty = none
+: "${TASK_ENTRY_SKILLS:=}"              # /next-task's entry-point menu
+: "${VERSION_BUMP_FLOOR:=}"             # lowest segment a normal ship may bump
+: "${RESERVED_VERSION_SEGMENT:=}"       # segment reserved for out-of-band hotfixes
+: "${REBUILD_TRIGGER_PATHS:=}"          # paths whose change means rebuild the image
+
+AGENT_KEYS="BASE_BRANCH MERGE_METHOD INERT_PATHS SHIP_SKILL TASK_ENTRY_SKILLS
+VERSION_BUMP_FLOOR RESERVED_VERSION_SEGMENT REBUILD_TRIGGER_PATHS"
+
+case "${1:-}" in
+  --agent)
+    for k in $AGENT_KEYS; do printf '%s=%q\n' "$k" "${!k}"; done ;;
+  --keys)
+    for k in $AGENT_KEYS; do printf '%s\n' "$k"; done ;;
+  -h|--help|"")
+    sed -n '3,20p' "$0" | sed 's/^#\{1,\} \{0,1\}//' ;;
+  *)
+    key="$1"
+    printf '%s\n' "${!key:-${2:-}}" ;;
+esac
