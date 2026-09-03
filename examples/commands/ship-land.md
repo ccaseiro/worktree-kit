@@ -59,9 +59,21 @@ precisely when only one ship runs at a time.
 # Pass --steal ONLY on this initial attempt, and only when the user asked for
 # it. Fail closed: --steal drives a destructive rm -rf, so any UNRECOGNIZED
 # token disarms it — "/ship-land don't --steal" must never reach it.
+# Capture the raw argument string ONCE, into a quoted heredoc. Claude Code
+# splices the user's text in verbatim BEFORE the shell parses it, so a prose
+# description like "corrigir o 500 (criar & guardar)" would otherwise be read
+# as shell: the parentheses are a syntax error, and `backticks`, $(...), ; and
+# > would RUN. A quoted delimiter makes every byte inert text.
+ARGS=$(cat <<'GSTACK_EOF'
+$ARGUMENTS
+GSTACK_EOF
+)
+# zsh does not word-split unquoted parameters and bash does; the tool shell is
+# not guaranteed to be either, so ask for the same behaviour explicitly.
+[ -n "${ZSH_VERSION:-}" ] && setopt shwordsplit
 STEAL=""; WANT=no; UNKNOWN=no
 set -f
-for tok in $ARGUMENTS; do
+for tok in $ARGS; do
   case "$tok" in
     --steal|steal) WANT=yes ;;
     skip-tests|full-tests|no-merge|pr-only) : ;;
@@ -139,9 +151,21 @@ disables the suite ahead of an auto-merge, so an exact token match is the whole
 gate.
 
 ```bash
+# Capture the raw argument string ONCE, into a quoted heredoc. Claude Code
+# splices the user's text in verbatim BEFORE the shell parses it, so a prose
+# description like "corrigir o 500 (criar & guardar)" would otherwise be read
+# as shell: the parentheses are a syntax error, and `backticks`, $(...), ; and
+# > would RUN. A quoted delimiter makes every byte inert text.
+ARGS=$(cat <<'GSTACK_EOF'
+$ARGUMENTS
+GSTACK_EOF
+)
+# zsh does not word-split unquoted parameters and bash does; the tool shell is
+# not guaranteed to be either, so ask for the same behaviour explicitly.
+[ -n "${ZSH_VERSION:-}" ] && setopt shwordsplit
 WANT_SKIP=no; WANT_FULL=no; NO_MERGE=no; UNKNOWN=no
 set -f
-for tok in $ARGUMENTS; do
+for tok in $ARGS; do
   case "$tok" in
     skip-tests) WANT_SKIP=yes ;;
     full-tests) WANT_FULL=yes ;;

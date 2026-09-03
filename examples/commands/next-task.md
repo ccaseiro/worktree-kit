@@ -54,6 +54,19 @@ eval "$(wtconf --agent)"   # BASE_BRANCH, TASK_ENTRY_SKILLS, REBUILD_TRIGGER_PAT
 # report often starts with one ("/deploy fails on staging").
 VIA_OK=" $TASK_ENTRY_SKILLS "
 
+# Capture the raw argument string ONCE, into a quoted heredoc. Claude Code
+# splices the user's text in verbatim BEFORE the shell parses it, so a prose
+# description like "corrigir o 500 (criar & guardar)" would otherwise be read
+# as shell: the parentheses are a syntax error, and `backticks`, $(...), ; and
+# > would RUN. A quoted delimiter makes every byte inert text.
+ARGS=$(cat <<'GSTACK_EOF'
+$ARGUMENTS
+GSTACK_EOF
+)
+# zsh does not word-split unquoted parameters and bash does; the tool shell is
+# not guaranteed to be either, so ask for the same behaviour explicitly.
+[ -n "${ZSH_VERSION:-}" ] && setopt shwordsplit
+
 FRESH=no; FRESH_DB=no; SLUG=""; VIA=""; DESC=""
 set -f   # no globbing: "/opt/*" in a description must stay literal
 
@@ -62,11 +75,11 @@ set -f   # no globbing: "/opt/*" in a description must stay literal
 # from the value: a bare "via=" must still suppress the shorthand, or an empty
 # value would read as "no via= given".
 VIA_SEEN=no; VIA_EXPLICIT=""
-for tok in $ARGUMENTS; do
+for tok in $ARGS; do
   case "$tok" in via=*) VIA_SEEN=yes; VIA_EXPLICIT="${tok#via=}"; VIA_EXPLICIT="${VIA_EXPLICIT#/}" ;; esac
 done
 
-for tok in $ARGUMENTS; do
+for tok in $ARGS; do
   case "$tok" in
     --fresh) FRESH=yes ;;
     --fresh-db) FRESH_DB=yes ;;
