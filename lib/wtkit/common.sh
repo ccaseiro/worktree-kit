@@ -36,10 +36,34 @@ wtkit_main_root() {
   printf '%s' "$root"
 }
 
+# The ref a new worktree branches from when no --base is given. Hardcoding
+# origin/main strands every repo whose default is develop/master/trunk: the
+# worktree comes up on a branch that can be hundreds of commits stale, which
+# reads as a broken checkout rather than a wrong base.
+#
+# BASE_BRANCH comes first because it is the SAME branch /ship-land merges into
+# and /next-task resets off. A separate key could disagree with it, and a repo
+# whose worktrees branch from develop while its PRs land on main is a trap.
+# origin/HEAD is the remote's own answer to "what is the default branch", so it
+# is right far more often than a hardcoded name.
+wtkit_default_base() {
+  local root="${1:-.}" head
+  [ -n "${BASE_BRANCH:-}" ] && { printf 'origin/%s' "$BASE_BRANCH"; return; }
+  head=$(git -C "$root" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || echo "")
+  # A --single-branch clone never gets the ref. Ask the remote once and cache
+  # it, exactly as `git remote set-head origin -a` would; failure is fine, we
+  # just fall through to the historical default.
+  if [ -z "$head" ]; then
+    git -C "$root" remote set-head origin --auto >/dev/null 2>&1 || true
+    head=$(git -C "$root" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || echo "")
+  fi
+  printf '%s' "${head:-origin/main}"
+}
+
 # ---- config -----------------------------------------------------------------
 # Sets REPO, PROJECT_SLUG, USE_DOCKER, the four port bases, INHERIT_ENV_KEYS,
-# WORKSPACE_INITIAL_PROMPT_FMT, FINISH_HINT — and sources the repo conf, which
-# may override any of them and define the write_env / post_up hooks.
+# WORKSPACE_INITIAL_PROMPT_FMT, FINISH_HINT, DEFAULT_BASE — and sources the repo
+# conf, which may override any of them and define the write_env / post_up hooks.
 wtkit_load_conf() {
   MAIN_ROOT="$1"
   REPO=$(basename "$MAIN_ROOT")
@@ -58,6 +82,10 @@ wtkit_load_conf() {
     # shellcheck disable=SC1090
     . "$WTKIT_CONF"
   fi
+
+  # Resolved after the conf is sourced so a BASE_BRANCH it sets is honoured.
+  # A caller's --base still wins: the launchers only fall back to this.
+  : "${DEFAULT_BASE:=$(wtkit_default_base "$MAIN_ROOT")}"
 
   # Slugify whatever we end up with, not just the default: the slug becomes a
   # docker project name and a database identifier, and a conf is free to set

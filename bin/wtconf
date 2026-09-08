@@ -8,7 +8,7 @@
 # the conf takes effect before it lands.
 #
 # Usage:
-#   wtconf BASE_BRANCH            # -> main
+#   wtconf BASE_BRANCH            # -> the remote's default branch, e.g. main
 #   wtconf INERT_PATHS            # -> "" when the project declared none
 #   wtconf FOO fallback           # -> any conf key, with a fallback
 #   wtconf --agent                # -> shell-quoted KEY=value lines, for eval
@@ -32,7 +32,10 @@ wtkit_load_conf "$MAIN_ROOT"
 
 # The agent-facing key set. The defaults live HERE rather than in common.sh so
 # the launchers and the slash commands stay independently versionable.
-: "${BASE_BRANCH:=main}"                # branch /ship-land merges into
+# Derived from the remote's default branch (origin/HEAD) rather than hardcoded,
+# so a develop/master/trunk repo does not have to declare the obvious. DEFAULT_BASE
+# is the ref form (origin/x) that wtkit_load_conf already resolved.
+: "${BASE_BRANCH:=${DEFAULT_BASE#origin/}}"   # branch /ship-land merges into
 : "${MERGE_METHOD:=--merge}"            # gh pr merge flag: --merge|--squash|--rebase
 : "${INERT_PATHS:=}"                    # globs the test suite cannot observe
 : "${SHIP_SKILL:=/ship}"                # the skill /ship-land runs; empty = none

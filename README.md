@@ -43,6 +43,7 @@ TASK_WEB_BASE=8100               # task worktrees
 TASK_DB_BASE=5500
 TASK_PORT_SPAN=400               # width of the task band (default 400 when pinned)
 WORKSPACE_PORT_SPAN=200
+BASE_BRANCH="develop"            # branch worktrees fork from and PRs land on
 INHERIT_ENV_KEYS="OPENAI_API_KEY ANTHROPIC_API_KEY"
 WORKSPACE_INITIAL_PROMPT_FMT="/next-task %s"
 FINISH_HINT="Finish with /ship-land or /ship-worktree."
@@ -151,7 +152,7 @@ Every one is optional, and every default fails safe.
 
 | Key | Default | Used by |
 |---|---|---|
-| `BASE_BRANCH` | `main` | both |
+| `BASE_BRANCH` | `origin/HEAD`, else `main` | both, **and both launchers** — `new-workspace`/`new-task` branch new worktrees from `origin/<BASE_BRANCH>` |
 | `MERGE_METHOD` | `--merge` | `/ship-land` |
 | `SHIP_SKILL` | `/ship` | `/ship-land` — empty makes it refuse rather than guess |
 | `INERT_PATHS` | *(none)* | `/ship-land` — none means the suite always runs |
@@ -191,6 +192,12 @@ ship-classify [--base <ref>]
 Both launchers hand the **current pane** to Claude by default; `--tmux` opens
 a new window instead. `--no-rc` skips Remote Control, which needs a claude.ai
 login rather than an API key.
+
+`--base` defaults to `origin/<BASE_BRANCH>` when the conf sets one, else to the
+remote's own default branch (`origin/HEAD`), else to `origin/main`. Setting
+`BASE_BRANCH` is the fix for a repo whose default is not `main`: without it a
+worktree silently forks from a stale `origin/main`, and the same key already
+tells `/ship-land` where to merge, so the two cannot drift apart.
 
 ## Requirements
 

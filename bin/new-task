@@ -20,7 +20,9 @@
 #   --no-docker      Skip building/starting the docker stack (docs-only tasks).
 #   --no-launch      Prepare the worktree but don't start Claude.
 #   --tmux           Launch Claude in a new tmux window instead of this pane.
-#   --base <ref>     Base the worktree on <ref> (default: origin/main).
+#   --base <ref>     Base the worktree on <ref>. Default: origin/<BASE_BRANCH>
+#                    from workspace.conf, else the remote's own default
+#                    branch (origin/HEAD), else origin/main.
 #   --prefix <p>     Branch prefix (default: feature). Branch = <p>/<slug>.
 #   -h | --help      Show this help.
 #
@@ -43,7 +45,7 @@ fi
 NO_DOCKER=0
 NO_LAUNCH=0
 USE_TMUX=0
-BASE="origin/main"
+BASE=""                  # empty until the conf is loaded; see wtkit_default_base
 PREFIX="feature"
 
 # Options may appear before OR after the slug. The first bare (non-option)
@@ -57,7 +59,7 @@ while [ $# -gt 0 ]; do
     --tmux) USE_TMUX=1; shift ;;
     --base) BASE="${2:?--base needs a ref}"; shift 2 ;;
     --prefix) PREFIX="${2:?--prefix needs a value}"; shift 2 ;;
-    -h|--help) sed -n '2,31p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,33p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     --) shift; while [ $# -gt 0 ]; do PROMPT_ARGS+=("$1"); shift; done ;;
     -*) echo "Unknown option: $1" >&2; exit 2 ;;
     *) if [ -z "$SLUG" ]; then SLUG="$1"; else PROMPT_ARGS+=("$1"); fi; shift ;;
@@ -80,6 +82,7 @@ fi
 # ---- locate the primary (main) checkout + load the repo config -------------
 MAIN_ROOT=$(wtkit_main_root)
 wtkit_load_conf "$MAIN_ROOT"
+: "${BASE:=$DEFAULT_BASE}"   # --base wins; otherwise the repo default
 
 STACK_UP=0
 WT_DIR="$MAIN_ROOT/.claude/worktrees/$SLUG"

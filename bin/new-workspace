@@ -27,7 +27,9 @@
 #   --tmux        Launch Claude in a new tmux window instead of this pane.
 #   --no-rc       Launch a plain named session (claude --name) instead of
 #                 enabling Remote Control (use if you're not logged into claude.ai).
-#   --base <ref>  Base the worktree on <ref> (default: origin/main).
+#   --base <ref>  Base the worktree on <ref>. Default: origin/<BASE_BRANCH>
+#                 from workspace.conf, else the remote's own default branch
+#                 (origin/HEAD), else origin/main.
 #   -h | --help   Show this help.
 #
 # The Claude session is named "<repo>-<n>" (e.g. rev-portal-1) and, by default,
@@ -49,7 +51,7 @@ NO_DOCKER=0
 NO_LAUNCH=0
 NO_RC=0
 USE_TMUX=0
-BASE="origin/main"
+BASE=""            # empty until the conf is loaded; see wtkit_default_base
 N=""
 PROMPT_ARGS=()   # bare args after the index = the first-task description
 
@@ -60,7 +62,7 @@ while [ $# -gt 0 ]; do
     --tmux) USE_TMUX=1; shift ;;
     --no-rc) NO_RC=1; shift ;;
     --base) BASE="${2:?--base needs a ref}"; shift 2 ;;
-    -h|--help) sed -n '2,37p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,39p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     --) shift; while [ $# -gt 0 ]; do PROMPT_ARGS+=("$1"); shift; done ;;
     -*) echo "Unknown option: $1" >&2; exit 2 ;;
     *) if [ -z "$N" ]; then N="$1"; else PROMPT_ARGS+=("$1"); fi; shift ;;
@@ -76,6 +78,7 @@ fi
 # ---- locate the primary (main) checkout + load the repo config -------------
 MAIN_ROOT=$(wtkit_main_root)
 wtkit_load_conf "$MAIN_ROOT"
+: "${BASE:=$DEFAULT_BASE}"   # --base wins; otherwise the repo default
 
 STACK_UP=0
 WT_DIR="$MAIN_ROOT/.claude/worktrees/workspace-$N"
@@ -135,7 +138,7 @@ cat <<EOF
 ✅ Workspace $N ready
 
   Session:  $NAME  ($( [ "$NO_RC" -eq 1 ] && echo "named, no remote control" || echo "Remote Control enabled — also drivable from claude.ai / app" ))
-  Branch:   $BRANCH  (placeholder — start a task to move onto a feature branch)
+  Branch:   $BRANCH  (base: $BASE — placeholder, start a task to move onto a feature branch)
   Worktree: $WT_DIR
 $( [ "$STACK_UP" -eq 1 ] && echo "  App URL:  http://localhost:$WEB_PORT" )
 $( [ "$USE_DOCKER" -eq 1 ] && echo "  Project:  $PROJ  (web:$WEB_PORT db:$DB_PORT)" )
