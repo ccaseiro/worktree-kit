@@ -167,7 +167,7 @@ EOF
 
 # Copy inherited secrets from the main checkout's .env. Never writes back.
 wtkit_inherit_env_keys() {
-  local envfile="$1" key val
+  local envfile="$1" key val tmp
   [ -n "${INHERIT_ENV_KEYS:-}" ] || return 0
   [ -f "$MAIN_ROOT/.env" ] || return 0
   for key in $INHERIT_ENV_KEYS; do
@@ -178,11 +178,20 @@ wtkit_inherit_env_keys() {
       # containing one is silently corrupted into the whole matched line.
       # ENVIRON passes both strings through literally (awk -v would still
       # process backslash escapes).
-      k="$key" v="$val" awk '
-        BEGIN { k = ENVIRON["k"]; v = ENVIRON["v"] }
-        { n = index($0, "=")
-          if (n > 0 && substr($0, 1, n - 1) == k) print k "=" v; else print }
-      ' "$envfile" > "$envfile.wtkit" && mv "$envfile.wtkit" "$envfile"
+      # cp -p seeds the temp with the original's mode, the redirect truncates
+      # it without changing that mode, mv swaps it in atomically. A bare
+      # "> $envfile" truncates first: an interrupted write would leave the
+      # worktree with no COMPOSE_PROJECT_NAME or ports.
+      tmp="$envfile.wtkit.$$"
+      if cp -p "$envfile" "$tmp" &&
+         k="$key" v="$val" awk '
+           BEGIN { k = ENVIRON["k"]; v = ENVIRON["v"] }
+           { n = index($0, "=")
+             if (n > 0 && substr($0, 1, n - 1) == k) print k "=" v; else print }
+         ' "$envfile" > "$tmp" && mv "$tmp" "$envfile"; then :; else
+        rm -f "$tmp"
+        echo "!! failed to write $key into $envfile" >&2
+      fi
     else
       printf '%s=%s\n' "$key" "$val" >> "$envfile"
     fi
