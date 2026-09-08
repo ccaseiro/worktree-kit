@@ -36,32 +36,70 @@ wtkit_main_root() {
   printf '%s' "$root"
 }
 
-# The ref a new worktree branches from when no --base is given. Hardcoding
-# origin/main strands every repo whose default is develop/master/trunk: the
-# worktree comes up on a branch that can be hundreds of commits stale, which
-# reads as a broken checkout rather than a wrong base.
+# wtkit_resolve_base_ref <root> <branch>
+#   The one place that answers "given this branch NAME, what ref do I actually
+#   use, and is it on the remote?" Prints "<ref> <branch> <on_remote>", where
+#   <on_remote> is 1 or 0. Returns 1 and prints nothing when the name matches
+#   neither a remote-tracking ref nor a local branch.
 #
-# BASE_BRANCH comes first because it is the SAME branch /ship-land merges into
-# and /next-task resets off. A separate key could disagree with it, and a repo
-# whose worktrees branch from develop while its PRs land on main is a trap.
-# origin/HEAD is the remote's own answer to "what is the default branch", so it
-# is right far more often than a hardcoded name.
+#   The remote wins when a name exists both ways: the local copy may be behind,
+#   and branching new work off a stale copy silently forks it. The local
+#   fallback is for an integration branch that collects several tasks before
+#   one PR and has not been pushed yet — handing git "origin/<unpushed>" fails
+#   the launcher outright.
+#
+#   Callers must NOT rebuild "origin/$branch" themselves. That reconstruction
+#   is the bug this function exists to delete: a local-only base resolved
+#   correctly here and then failed in every consumer that pasted the prefix
+#   back on, including the guard that force-deletes branches.
+wtkit_resolve_base_ref() {
+  local root="${1:-.}" branch="${2:-}"
+  [ -n "$branch" ] || return 1
+  if git -C "$root" rev-parse --verify --quiet "refs/remotes/origin/$branch" >/dev/null 2>&1; then
+    printf 'origin/%s %s 1' "$branch" "$branch"; return 0
+  fi
+  if git -C "$root" rev-parse --verify --quiet "refs/heads/$branch" >/dev/null 2>&1; then
+    printf '%s %s 0' "$branch" "$branch"; return 0
+  fi
+  return 1
+}
+
+# The base a new worktree branches from when no --base is given, printed in the
+# same "<ref> <branch> <on_remote>" shape wtkit_resolve_base_ref returns.
+# Hardcoding origin/main strands every repo whose default is develop/master/
+# trunk: the worktree comes up on a branch that can be hundreds of commits
+# stale, which reads as a broken checkout rather than a wrong base.
+#
+# Resolution order:
+#   1. git config wtkit.baseBranch  — the run-local override
+#   2. BASE_BRANCH from workspace.conf — the project's durable default
+#   3. origin/HEAD — the remote's own answer to "what is the default branch"
+#   4. origin/main — the historical fallback
+#
+# The git config override comes FIRST because the integration branch a
+# multi-worktree fan-in collects into is a this-clone, this-week choice, not
+# durable project config. Committing it to workspace.conf would put a branch
+# name that dies next week into the PR and hand a fresh clone a base that no
+# longer exists. git config lives in the shared common git dir, so every
+# worktree of the repo reads the same value with nothing to keep in sync — the
+# same property ship-lock relies on.
+#
+# BASE_BRANCH is consulted rather than a separate key because it is the SAME
+# branch /ship-land merges into and /next-task resets off. A separate key could
+# disagree with it, and a repo whose worktrees branch from develop while its
+# PRs land on main is a trap.
 wtkit_default_base() {
-  local root="${1:-.}" head
-  # Prefer the remote-tracking ref, but fall back to a local branch of the same
-  # name: an integration branch that collects several tasks before one PR may
-  # not be pushed yet, and handing git "origin/<unpushed>" fails the launcher
-  # outright. Announce a BASE_BRANCH that matches nothing rather than silently
-  # forking from somewhere the project did not ask for.
-  if [ -n "${BASE_BRANCH:-}" ]; then
-    if git -C "$root" rev-parse --verify --quiet "refs/remotes/origin/$BASE_BRANCH" >/dev/null 2>&1; then
-      printf 'origin/%s' "$BASE_BRANCH"; return
+  local root="${1:-.}" want head pair
+  want=$(git -C "$root" config --get wtkit.baseBranch 2>/dev/null) || want=""
+  [ -n "$want" ] || want="${BASE_BRANCH:-}"
+  if [ -n "$want" ]; then
+    if pair=$(wtkit_resolve_base_ref "$root" "$want"); then
+      case "$pair" in
+        *' 0') echo "!! base '$want' is not on origin yet; using the local branch." >&2 ;;
+      esac
+      printf '%s' "$pair"; return
     fi
-    if git -C "$root" rev-parse --verify --quiet "refs/heads/$BASE_BRANCH" >/dev/null 2>&1; then
-      echo "!! BASE_BRANCH='$BASE_BRANCH' is not on origin yet; using the local branch." >&2
-      printf '%s' "$BASE_BRANCH"; return
-    fi
-    echo "!! BASE_BRANCH='$BASE_BRANCH' matches no branch; falling back to the remote default." >&2
+    echo "!! base '$want' matches no branch; falling back to the remote default." >&2
   fi
   head=$(git -C "$root" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || echo "")
   # A --single-branch clone never gets the ref. Ask the remote once and cache
@@ -71,13 +109,19 @@ wtkit_default_base() {
     git -C "$root" remote set-head origin --auto >/dev/null 2>&1 || true
     head=$(git -C "$root" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || echo "")
   fi
-  printf '%s' "${head:-origin/main}"
+  # Route the remote's own answer back through the resolver rather than
+  # trusting the "origin/" prefix, so one code path decides what a ref is.
+  if [ -n "$head" ] && pair=$(wtkit_resolve_base_ref "$root" "${head#origin/}"); then
+    printf '%s' "$pair"; return
+  fi
+  printf 'origin/main main 1'
 }
 
 # ---- config -----------------------------------------------------------------
 # Sets REPO, PROJECT_SLUG, USE_DOCKER, the four port bases, INHERIT_ENV_KEYS,
-# WORKSPACE_INITIAL_PROMPT_FMT, FINISH_HINT, DEFAULT_BASE — and sources the repo
-# conf, which may override any of them and define the write_env / post_up hooks.
+# WORKSPACE_INITIAL_PROMPT_FMT, FINISH_HINT, DEFAULT_BASE, DEFAULT_BASE_BRANCH,
+# DEFAULT_BASE_ON_REMOTE — and sources the repo conf, which may override any of
+# them and define the write_env / post_up hooks.
 wtkit_load_conf() {
   MAIN_ROOT="$1"
   REPO=$(basename "$MAIN_ROOT")
@@ -99,7 +143,23 @@ wtkit_load_conf() {
 
   # Resolved after the conf is sourced so a BASE_BRANCH it sets is honoured.
   # A caller's --base still wins: the launchers only fall back to this.
-  : "${DEFAULT_BASE:=$(wtkit_default_base "$MAIN_ROOT")}"
+  #
+  # DEFAULT_BASE is the ref to hand git, DEFAULT_BASE_BRANCH the bare name a PR
+  # targets, DEFAULT_BASE_ON_REMOTE whether fetching it or asking a forge about
+  # it means anything. They are resolved together, from one lookup, so they can
+  # never disagree about the same base.
+  if [ -z "${DEFAULT_BASE:-}" ]; then
+    read -r DEFAULT_BASE DEFAULT_BASE_BRANCH DEFAULT_BASE_ON_REMOTE \
+      <<<"$(wtkit_default_base "$MAIN_ROOT")"
+  else
+    # A conf may pin DEFAULT_BASE outright. Classify what it pinned so the three
+    # stay consistent; a pinned ref is already a ref, so the prefix is only
+    # stripped when it actually names the remote.
+    case "$DEFAULT_BASE" in
+      origin/*) DEFAULT_BASE_BRANCH="${DEFAULT_BASE#origin/}"; DEFAULT_BASE_ON_REMOTE=1 ;;
+      *)        DEFAULT_BASE_BRANCH="$DEFAULT_BASE";           DEFAULT_BASE_ON_REMOTE=0 ;;
+    esac
+  fi
 
   # Slugify whatever we end up with, not just the default: the slug becomes a
   # docker project name and a database identifier, and a conf is free to set
