@@ -21,6 +21,8 @@
 #   --no-launch      Prepare the worktree but don't start Claude.
 #   --tmux           Launch Claude in a new tmux window instead of this pane.
 #   --base <ref>     Base the worktree on <ref>. Default: origin/<BASE_BRANCH>
+#                 Refused when it names a different commit from the repo's
+#                 own base; pass --base-override to accept the split.
 #                    from workspace.conf, else the remote's own default
 #                    branch (origin/HEAD), else origin/main.
 #   --prefix <p>     Branch prefix (default: feature). Branch = <p>/<slug>.
@@ -45,6 +47,7 @@ fi
 NO_DOCKER=0
 NO_LAUNCH=0
 USE_TMUX=0
+BASE_OVERRIDE=0
 BASE=""                  # empty until the conf is loaded; see wtkit_default_base
 PREFIX="feature"
 
@@ -58,8 +61,9 @@ while [ $# -gt 0 ]; do
     --no-launch) NO_LAUNCH=1; shift ;;
     --tmux) USE_TMUX=1; shift ;;
     --base) BASE="${2:?--base needs a ref}"; shift 2 ;;
+    --base-override) BASE_OVERRIDE=1; shift ;;
     --prefix) PREFIX="${2:?--prefix needs a value}"; shift 2 ;;
-    -h|--help) sed -n '2,33p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,35p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     --) shift; while [ $# -gt 0 ]; do PROMPT_ARGS+=("$1"); shift; done ;;
     -*) echo "Unknown option: $1" >&2; exit 2 ;;
     *) if [ -z "$SLUG" ]; then SLUG="$1"; else PROMPT_ARGS+=("$1"); fi; shift ;;
@@ -82,6 +86,9 @@ fi
 # ---- locate the primary (main) checkout + load the repo config -------------
 MAIN_ROOT=$(wtkit_main_root)
 wtkit_load_conf "$MAIN_ROOT"
+if [ -n "$BASE" ] && [ "$BASE_OVERRIDE" -eq 0 ]; then
+  wtkit_assert_base_agrees "$MAIN_ROOT" "$BASE" "$DEFAULT_BASE" || exit 2
+fi
 : "${BASE:=$DEFAULT_BASE}"   # --base wins; otherwise the repo default
 
 STACK_UP=0

@@ -117,6 +117,41 @@ wtkit_default_base() {
   printf 'origin/main main 1'
 }
 
+
+# wtkit_assert_base_agrees <root> <explicit-base> <resolved-base>
+#   Refuses when a caller's --base names a different commit from the base the
+#   repo resolved. --base is read once and never persisted, so it steers only
+#   worktree creation; every guard and reset afterwards reads the resolved base.
+#   Letting the two disagree silently is what makes /next-task count the
+#   integration branch's own commits as your unlanded work, and refuse forever.
+#
+#   Compared as COMMITS, not strings: "feat/x", "refs/heads/feat/x" and a
+#   detached SHA can all name the same thing, and a string test would reject
+#   the equivalents while still missing a genuine divergence. Two branches
+#   sitting on the same commit are identical content, so they pass.
+wtkit_assert_base_agrees() {
+  local root="$1" want="$2" resolved="$3" a b
+  a=$(git -C "$root" rev-parse --verify --quiet "$want^{commit}") || a=""
+  if [ -z "$a" ]; then
+    echo "--base '$want' does not resolve to a commit in this repo." >&2
+    return 1
+  fi
+  b=$(git -C "$root" rev-parse --verify --quiet "$resolved^{commit}") || b=""
+  [ -n "$b" ] || return 0   # nothing to disagree with
+  [ "$a" = "$b" ] && return 0
+  echo "" >&2
+  echo "--base '$want' disagrees with this repo's base '$resolved'." >&2
+  echo "" >&2
+  echo "  --base steers the worktree you are creating RIGHT NOW and nothing" >&2
+  echo "  else. /next-task, ship-classify and the teardown guard all read" >&2
+  echo "  '$resolved' instead, so they would measure this worktree against a" >&2
+  echo "  branch it was never cut from." >&2
+  echo "" >&2
+  echo "  Set the base for everything:  git config wtkit.baseBranch <branch>" >&2
+  echo "  Or accept the split just here: --base-override" >&2
+  return 1
+}
+
 # ---- config -----------------------------------------------------------------
 # Sets REPO, PROJECT_SLUG, USE_DOCKER, the four port bases, INHERIT_ENV_KEYS,
 # WORKSPACE_INITIAL_PROMPT_FMT, FINISH_HINT, DEFAULT_BASE, DEFAULT_BASE_BRANCH,

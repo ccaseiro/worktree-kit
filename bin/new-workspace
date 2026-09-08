@@ -28,6 +28,8 @@
 #   --no-rc       Launch a plain named session (claude --name) instead of
 #                 enabling Remote Control (use if you're not logged into claude.ai).
 #   --base <ref>  Base the worktree on <ref>. Default: origin/<BASE_BRANCH>
+#                 Refused when it names a different commit from the repo's
+#                 own base; pass --base-override to accept the split.
 #                 from workspace.conf, else the remote's own default branch
 #                 (origin/HEAD), else origin/main.
 #   -h | --help   Show this help.
@@ -51,6 +53,7 @@ NO_DOCKER=0
 NO_LAUNCH=0
 NO_RC=0
 USE_TMUX=0
+BASE_OVERRIDE=0
 BASE=""            # empty until the conf is loaded; see wtkit_default_base
 N=""
 PROMPT_ARGS=()   # bare args after the index = the first-task description
@@ -62,7 +65,8 @@ while [ $# -gt 0 ]; do
     --tmux) USE_TMUX=1; shift ;;
     --no-rc) NO_RC=1; shift ;;
     --base) BASE="${2:?--base needs a ref}"; shift 2 ;;
-    -h|--help) sed -n '2,39p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --base-override) BASE_OVERRIDE=1; shift ;;
+    -h|--help) sed -n '2,41p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     --) shift; while [ $# -gt 0 ]; do PROMPT_ARGS+=("$1"); shift; done ;;
     -*) echo "Unknown option: $1" >&2; exit 2 ;;
     *) if [ -z "$N" ]; then N="$1"; else PROMPT_ARGS+=("$1"); fi; shift ;;
@@ -78,6 +82,9 @@ fi
 # ---- locate the primary (main) checkout + load the repo config -------------
 MAIN_ROOT=$(wtkit_main_root)
 wtkit_load_conf "$MAIN_ROOT"
+if [ -n "$BASE" ] && [ "$BASE_OVERRIDE" -eq 0 ]; then
+  wtkit_assert_base_agrees "$MAIN_ROOT" "$BASE" "$DEFAULT_BASE" || exit 2
+fi
 : "${BASE:=$DEFAULT_BASE}"   # --base wins; otherwise the repo default
 
 STACK_UP=0
