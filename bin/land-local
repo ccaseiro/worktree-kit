@@ -1,0 +1,264 @@
+#!/usr/bin/env bash
+#
+# land-local — land this worktree's branch into the repo's LOCAL integration
+# branch, git-natively: no PR, no gh, no VERSION bump, no forge of any kind.
+#
+# This is the fan-in half of running several agents at once. Each agent works
+# in its own worktree off a shared integration branch; when one finishes, this
+# advances that branch so the next /next-task in any other worktree starts from
+# the accumulated result. VERSION and CHANGELOG are deliberately untouched —
+# they belong to the single PR the integration branch eventually becomes, not
+# to each agent's slice of it.
+#
+# Ordering, and why:
+#
+#   1. merge the integration branch INTO this branch, here
+#   2. run TEST_CMD, unlocked, so parallel agents test in parallel
+#   3. take the lock, and only then check nothing moved underneath
+#   4. fast-forward the integration branch to the exact commit step 2 tested
+#
+# Step 1 is where a conflict can happen, and it happens in YOUR worktree where
+# you can resolve it. By the time step 4 runs, this branch already contains the
+# integration tip and the lock says nobody else has landed since, so step 4 can
+# only fast-forward. The integration branch is never touched until the tests
+# that ran against that exact tree came back green.
+#
+# The lock is deliberately NOT held across the tests: holding it there
+# serializes every agent's test run and, with a slow suite, walks straight into
+# ship-lock's own ~30-minute contention threshold. The cost of not holding it
+# is that the base can move while you test, which step 3 detects and retries.
+# After --retries attempts it stops guessing and does the whole thing under the
+# lock, which is slower but always terminates.
+#
+# Usage:
+#   land-local [--retries N] [--no-test] [--wait SECONDS]
+#
+#   --retries N     optimistic attempts before falling back to a locked
+#                   merge+test+land (default 3)
+#   --no-test       skip TEST_CMD. For a project that gates elsewhere; it is
+#                   not a way to land red code.
+#   --wait SECONDS  how long to wait for the lock (default 1800, matching
+#                   /ship-land's contention threshold)
+#   -h | --help     Show this help.
+#
+# Config (.claude/workspace.conf):
+#   TEST_CMD   the command that must pass before anything lands. Required
+#              unless --no-test: a fan-in with no gate is just a merge.
+#
+set -euo pipefail
+
+WTKIT_LIB="${WTKIT_LIB:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib/wtkit" 2>/dev/null && pwd)}"
+if [ ! -f "${WTKIT_LIB:-}/common.sh" ]; then
+  echo "wtkit library not found (looked in '${WTKIT_LIB:-?}'). Set WTKIT_LIB." >&2
+  exit 1
+fi
+# shellcheck disable=SC1091
+. "$WTKIT_LIB/common.sh"
+
+HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+SHIP_LOCK="$HERE/ship-lock"
+[ -x "$SHIP_LOCK" ] || SHIP_LOCK="ship-lock"
+
+RETRIES=3
+RUN_TESTS=1
+WAIT_SECS=1800
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --retries) RETRIES="${2:?--retries needs a number}"; shift 2 ;;
+    --no-test) RUN_TESTS=0; shift ;;
+    --wait) WAIT_SECS="${2:?--wait needs seconds}"; shift 2 ;;
+    -h|--help) sed -n '2,47p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) echo "land-local: unknown argument: $1" >&2; exit 2 ;;
+  esac
+done
+printf '%s' "$RETRIES" | grep -qE '^[1-9][0-9]*$' || { echo "--retries must be a positive integer." >&2; exit 2; }
+printf '%s' "$WAIT_SECS" | grep -qE '^[0-9]+$' || { echo "--wait must be a whole number of seconds." >&2; exit 2; }
+
+MAIN_ROOT=$(wtkit_main_root)
+wtkit_load_conf "$MAIN_ROOT"
+
+# ---- preconditions ---------------------------------------------------------
+INTEG="$DEFAULT_BASE_BRANCH"
+FEAT=$(git branch --show-current 2>/dev/null || echo "")
+
+[ -n "$FEAT" ] || { echo "Detached HEAD — check out the branch you want to land." >&2; exit 2; }
+if [ "$FEAT" = "$INTEG" ]; then
+  echo "You are ON the integration branch '$INTEG'. Run this from an agent's" >&2
+  echo "worktree, on the branch you want to land INTO it." >&2
+  exit 2
+fi
+if ! git -C "$MAIN_ROOT" rev-parse --verify --quiet "refs/heads/$INTEG" >/dev/null 2>&1; then
+  echo "No local branch '$INTEG' to land into." >&2
+  echo "" >&2
+  echo "land-local advances a branch that lives on this machine. The repo's" >&2
+  echo "base resolved to '$DEFAULT_BASE'." >&2
+  if [ "${DEFAULT_BASE_ON_REMOTE:-0}" -eq 1 ]; then
+    echo "That is a remote-tracking ref with no local counterpart: either create" >&2
+    echo "it (git branch $INTEG $DEFAULT_BASE) or use /ship-land to go via a PR." >&2
+  else
+    echo "Point the base at a branch that exists: git config wtkit.baseBranch <branch>" >&2
+  fi
+  exit 2
+fi
+if [ "$RUN_TESTS" -eq 1 ] && [ -z "${TEST_CMD:-}" ]; then
+  echo "No TEST_CMD in .claude/workspace.conf, so there is nothing gating this" >&2
+  echo "land. Set it, or pass --no-test if this project gates elsewhere." >&2
+  exit 2
+fi
+if [ -n "$(git status --porcelain)" ]; then
+  echo "Uncommitted changes in this worktree. Commit or stash them first —" >&2
+  echo "a merge would mix them into what gets tested and landed." >&2
+  exit 2
+fi
+if [ "${DEFAULT_BASE_ON_REMOTE:-0}" -eq 1 ]; then
+  echo "note: '$INTEG' also exists on origin. land-local advances the LOCAL"
+  echo "      branch only; it will be ahead of origin until you push it."
+fi
+
+# ---- helpers ---------------------------------------------------------------
+TOKEN=""
+release_lock() {
+  [ -n "$TOKEN" ] || return 0
+  "$SHIP_LOCK" release --token "$TOKEN" >/dev/null || true
+  TOKEN=""
+}
+# Any exit from here on gives the lock back. ship-lock cannot self-release on a
+# crash (no process holds it), so the one thing we can guarantee is that every
+# path this script actually reaches releases.
+trap release_lock EXIT
+
+acquire_lock() {
+  local waited=0 out
+  while :; do
+    out=$("$SHIP_LOCK" acquire) || true
+    case "$out" in
+      *ACQUIRED\ RUN_TOKEN=*)
+        TOKEN="${out##*RUN_TOKEN=}"; TOKEN="${TOKEN%%[![:print:]]*}"
+        return 0 ;;
+      *LOCK_BUSY*)
+        if [ "$waited" -ge "$WAIT_SECS" ]; then
+          echo "" >&2
+          printf '%s\n' "$out" >&2
+          echo "Lock still held after ${WAIT_SECS}s. If that session died, reclaim it" >&2
+          echo "with 'ship-lock acquire --steal' — ship-lock does NOT verify the" >&2
+          echo "holder is dead, so only do that if you know it is." >&2
+          return 1
+        fi
+        [ "$waited" -eq 0 ] && printf '%s\n' "$out"
+        sleep 15; waited=$(( waited + 15 )) ;;
+      *)
+        echo "" >&2; printf '%s\n' "$out" >&2
+        echo "Not a held lock — see 'ship-lock --help'. Nothing was landed." >&2
+        return 1 ;;
+    esac
+  done
+}
+
+# The worktree that has the integration branch checked out, if any.
+integration_worktree() {
+  git -C "$MAIN_ROOT" worktree list --porcelain \
+    | awk -v b="refs/heads/$INTEG" '/^worktree /{p=$2} /^branch /{if ($2==b){print p; exit}}'
+}
+
+# Advance the integration branch to <sha>, which is always a descendant of its
+# current tip by the time this runs.
+advance_integration() {
+  local sha="$1" wt
+  wt=$(integration_worktree)
+  if [ -n "$wt" ]; then
+    # Checked out somewhere: advance it THERE. `git branch -f` refuses outright
+    # on a checked-out branch, and `git update-ref` would succeed while leaving
+    # that worktree's index and HEAD pointing at a commit it never checked out,
+    # so it would report every landed file as a local deletion.
+    if ! git -C "$wt" merge --ff-only "$sha" >/dev/null 2>&1; then
+      echo "" >&2
+      echo "Could not fast-forward '$INTEG' in $wt." >&2
+      echo "That tree probably has uncommitted changes or local commits. Nothing" >&2
+      echo "was landed; sort that tree out and re-run." >&2
+      return 1
+    fi
+  else
+    git -C "$MAIN_ROOT" branch -f "$INTEG" "$sha"
+  fi
+}
+
+run_tests() {
+  [ "$RUN_TESTS" -eq 1 ] || { echo "==> Tests skipped (--no-test)"; return 0; }
+  echo "==> Running TEST_CMD"
+  # The conf is sourced bash already, so a command string from it is no more
+  # trusted here than anywhere else in the toolkit.
+  eval "$TEST_CMD"
+}
+
+integ_sha() { git -C "$MAIN_ROOT" rev-parse "refs/heads/$INTEG"; }
+
+# ---- land ------------------------------------------------------------------
+echo "==> Landing $FEAT into $INTEG"
+attempt=0
+while :; do
+  attempt=$(( attempt + 1 ))
+  if [ "$attempt" -gt "$RETRIES" ]; then break; fi
+
+  base_before=$(integ_sha)
+  echo "==> Attempt $attempt/$RETRIES: merging $INTEG ($(git rev-parse --short "$base_before"))"
+  if ! git merge --no-edit "refs/heads/$INTEG"; then
+    echo "" >&2
+    echo "Merge conflict. This is YOUR worktree, so resolve it here, commit," >&2
+    echo "and re-run land-local. '$INTEG' was not touched." >&2
+    exit 1
+  fi
+  cand=$(git rev-parse HEAD)
+
+  if [ "$cand" = "$base_before" ]; then
+    echo "==> Nothing to land: $FEAT adds no commits to $INTEG."
+    exit 0
+  fi
+
+  # Called in an `if` so a red suite returns here instead of set -e killing the
+  # script silently — the user needs to be told the integration branch is fine.
+  if ! run_tests; then
+    echo "" >&2
+    echo "TEST_CMD failed. '$INTEG' was not touched, and this branch keeps the" >&2
+    echo "merge so you can fix forward from the merged state. Re-run when green." >&2
+    exit 1
+  fi
+
+  acquire_lock || exit 1
+  # Two things must not have moved: the branch we are landing into, and the
+  # commit we actually tested. The second is not paranoia — anything that
+  # committed in this worktree while TEST_CMD ran would otherwise ride in
+  # untested on the back of a green result.
+  if [ "$(integ_sha)" = "$base_before" ] && [ "$(git rev-parse HEAD)" = "$cand" ]; then
+    advance_integration "$cand" || exit 1
+    release_lock
+    echo "==> Landed $(git rev-parse --short "$cand") on $INTEG"
+    exit 0
+  fi
+  release_lock
+  echo "==> $INTEG moved while testing; retrying"
+done
+
+# ---- locked fallback -------------------------------------------------------
+# The optimistic path kept losing the race. Do the whole thing under the lock:
+# slower, and it serializes other agents' landings behind this test run, but it
+# cannot livelock.
+echo "==> $RETRIES attempts lost the race; landing under the lock"
+acquire_lock || exit 1
+if ! git merge --no-edit "refs/heads/$INTEG"; then
+  echo "" >&2
+  echo "Merge conflict. Resolve it here, commit, and re-run. '$INTEG' untouched." >&2
+  exit 1
+fi
+cand=$(git rev-parse HEAD)
+if [ "$cand" = "$(integ_sha)" ]; then
+  echo "==> Nothing to land: $FEAT adds no commits to $INTEG."
+  exit 0
+fi
+if ! run_tests; then
+  echo "" >&2
+  echo "TEST_CMD failed under the lock. '$INTEG' was not touched." >&2
+  exit 1
+fi
+advance_integration "$cand" || exit 1
+release_lock
+echo "==> Landed $(git rev-parse --short "$cand") on $INTEG"
