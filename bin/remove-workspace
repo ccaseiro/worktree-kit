@@ -4,7 +4,8 @@
 # wipe its docker stack, remove the git worktree, and delete the branch.
 #
 # Refuses to remove a workspace that has uncommitted changes OR commits not on
-# origin/main (land it first) unless --force.
+# the repo's base (land it first) unless --force — and refuses just as hard
+# when it cannot resolve that base, because "cannot tell" is not "nothing".
 #
 # Ordering is deliberate: `docker compose down -v` runs FROM INSIDE the
 # worktree while its compose file still exists — removing the worktree first
@@ -65,15 +66,41 @@ fi
 
 BR=$(git -C "$WT_DIR" branch --show-current 2>/dev/null || echo "")
 DIRTY=$(git -C "$WT_DIR" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
-git -C "$MAIN_ROOT" fetch origin main >/dev/null 2>&1 || true
-UNSHIPPED=$(git -C "$WT_DIR" rev-list --count origin/main..HEAD 2>/dev/null || echo 0)
+# Measure against the base this repo actually uses, and treat an unresolvable
+# base as UNKNOWN rather than zero. The old guard asked origin/main..HEAD and
+# swallowed the failure with `|| echo 0`, so any repo whose default is not main
+# — and every local integration branch — reported "nothing unshipped" while
+# real commits sat on the branch. The confirmation prompt is gated on the same
+# counter, so it dropped its DISCARD warning too, and `git branch -D` then
+# force-deleted past git's own not-fully-merged check. Three layers of safety,
+# all defeated by one masked exit code.
+if [ "${DEFAULT_BASE_ON_REMOTE:-0}" -eq 1 ]; then
+  git -C "$MAIN_ROOT" fetch origin "$DEFAULT_BASE_BRANCH" >/dev/null 2>&1 || true
+fi
+UNSHIPPED=""
+if git -C "$WT_DIR" rev-parse --verify --quiet "$DEFAULT_BASE" >/dev/null 2>&1; then
+  UNSHIPPED=$(git -C "$WT_DIR" rev-list --count "$DEFAULT_BASE..HEAD") || UNSHIPPED=""
+fi
 
 echo "Workspace: $N"
 echo "Worktree:  $WT_DIR"
 echo "Branch:    ${BR:-<detached>}"
-echo "Dirty:     $DIRTY | Unshipped commits: $UNSHIPPED"
+echo "Base:      $DEFAULT_BASE"
+echo "Dirty:     $DIRTY | Unshipped commits: ${UNSHIPPED:-UNKNOWN (base unresolvable)}"
 
 # ---- safety gate -----------------------------------------------------------
+# Unknown first, and on its own: it is a different refusal from "you have work
+# here", and telling the user which one it is decides whether they land the
+# branch or fix their base config.
+if [ "$FORCE" -eq 0 ] && [ -z "$UNSHIPPED" ]; then
+  echo "" >&2
+  echo "Refusing: cannot resolve the base '$DEFAULT_BASE', so whether this" >&2
+  echo "workspace's commits have landed is UNKNOWN — which is not the same as" >&2
+  echo "none. Point the base at something that exists:" >&2
+  echo "  git config wtkit.baseBranch <branch>" >&2
+  echo "or pass --force to delete the branch regardless." >&2
+  exit 1
+fi
 if [ "$FORCE" -eq 0 ] && { [ "$DIRTY" -gt 0 ] || [ "$UNSHIPPED" -gt 0 ]; }; then
   echo "" >&2
   echo "Refusing: this workspace has uncommitted ($DIRTY) or unshipped ($UNSHIPPED) work." >&2
@@ -84,7 +111,11 @@ fi
 # ---- confirmation ----------------------------------------------------------
 if [ "$ASSUME_YES" -eq 0 ]; then
   WARN=""
-  { [ "$DIRTY" -gt 0 ] || [ "$UNSHIPPED" -gt 0 ]; } && WARN=" and DISCARD its uncommitted/unshipped work"
+  # -z first: with --force past an unresolvable base, UNSHIPPED is empty and an
+  # integer test on it would abort. Unknown warns exactly like non-zero does.
+  if [ "$DIRTY" -gt 0 ] || [ -z "$UNSHIPPED" ] || [ "$UNSHIPPED" -gt 0 ]; then
+    WARN=" and DISCARD its uncommitted/unshipped work"
+  fi
   printf "Remove workspace %s (stack + worktree + branch '%s')%s? [y/N] " "$N" "${BR:-?}" "$WARN"
   read -r ans
   case "$ans" in
