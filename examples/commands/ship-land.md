@@ -34,7 +34,7 @@ All optional, order-free, combinable (e.g. `/ship-land skip-tests no-merge`):
 
 ```bash
 eval "$(wtconf --agent)"
-echo "base=$BASE_BRANCH merge=$MERGE_METHOD ship=${SHIP_SKILL:-(none)}"
+echo "base=$BASE_REF (on remote: $BASE_ON_REMOTE) merge=$MERGE_METHOD ship=${SHIP_SKILL:-(none)}"
 echo "floor=${VERSION_BUMP_FLOOR:-(skill default)} reserved=${RESERVED_VERSION_SEGMENT:-(none)}"
 echo "inert=${INERT_PATHS:-(none — tests never skipped)}"
 ```
@@ -247,13 +247,16 @@ Only after a successful default merge. `/ship-land` runs from a feature
 worktree, so the base branch is checked out in a *different* working tree — you
 cannot `git checkout` it from here.
 
+- If `BASE_ON_REMOTE` is **0**, skip this whole step: the base never left this
+  machine, so there is no remote merge commit to pick up and nothing to
+  fast-forward from. Say so in the report rather than failing.
 - `git fetch origin "$BASE_BRANCH"` to pick up the merge commit.
 - Find the working tree holding it: `git worktree list --porcelain`, the entry
   whose `branch` is `refs/heads/$BASE_BRANCH`.
-- If found: `git -C <that-path> merge --ff-only "origin/$BASE_BRANCH"`. Safe —
-  the merge commit is a strict descendant, so it can only fast-forward. If it
-  fails (the base tree has diverged or has local commits), do NOT force it:
-  report that it needs a manual `git pull` and continue.
+- If found: `git -C <that-path> merge --ff-only "$BASE_REF"`. Safe — the merge
+  commit is a strict descendant, so it can only fast-forward. If it fails (the
+  base tree has diverged or has local commits), do NOT force it: report that it
+  needs a manual `git pull` and continue.
 - If the base is not checked out anywhere: `git fetch origin "$BASE_BRANCH:$BASE_BRANCH"`.
 - Leave untracked and ignored files in the base tree untouched.
 

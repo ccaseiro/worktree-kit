@@ -20,7 +20,7 @@
 # dependency manifests, container or infra definitions) must stay OUT, however
 # text-like it looks.
 #
-# Usage:  ship-classify [--base <ref>]     (default: origin/<BASE_BRANCH>)
+# Usage:  ship-classify [--base <ref>]     (default: BASE_REF from wtconf)
 # Prints one line per changed file, then the sentinel INERT_DIFF: yes|no
 set -euo pipefail
 # Globbing OFF for the whole script. INERT_PATHS is iterated unquoted (to word
@@ -45,10 +45,14 @@ while [ $# -gt 0 ]; do
     *) echo "ship-classify: unknown argument: $1" >&2; exit 2 ;;
   esac
 done
-[ -n "$BASE" ] || BASE="origin/$BASE_BRANCH"
+# BASE_REF, not origin/$BASE_BRANCH: the base may be a branch that lives only
+# on this machine, and rebuilding the remote form gives a ref git cannot
+# resolve — which lands here as "cannot classify", silently disabling the
+# docs-only fast path.
+[ -n "$BASE" ] || BASE="$BASE_REF"
 
 ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || ROOT=""
-BASE_REF=$(git merge-base "$BASE" HEAD 2>/dev/null) || BASE_REF=""
+MERGE_BASE=$(git merge-base "$BASE" HEAD 2>/dev/null) || MERGE_BASE=""
 
 # Every flag below is load-bearing:
 #   -C "$ROOT"            `git ls-files --others` is CWD-scoped (unlike git
@@ -70,15 +74,15 @@ BASE_REF=$(git merge-base "$BASE" HEAD 2>/dev/null) || BASE_REF=""
 g() { git -C "$ROOT" -c core.quotePath=false "$@"; }
 
 CHANGED=""
-if [ -n "$BASE_REF" ] && [ -n "$ROOT" ]; then
-  CHANGED=$( { g diff --name-only --no-renames "$BASE_REF" HEAD
+if [ -n "$MERGE_BASE" ] && [ -n "$ROOT" ]; then
+  CHANGED=$( { g diff --name-only --no-renames "$MERGE_BASE" HEAD
                g diff --name-only --no-renames HEAD
                g diff --name-only --no-renames --cached
                g ls-files --others --exclude-standard --full-name -- :/; } | sort -u )
 fi
 
 INERT=no   # only an affirmative full classification may set this to yes
-if [ -z "$ROOT" ] || [ -z "$BASE_REF" ]; then
+if [ -z "$ROOT" ] || [ -z "$MERGE_BASE" ]; then
   echo "INERT_DIFF: no  (cannot resolve $BASE or the repo root — refusing to classify)"
 elif [ -z "$INERT_PATHS" ]; then
   echo "INERT_DIFF: no  (no INERT_PATHS in workspace.conf — this project never skips)"

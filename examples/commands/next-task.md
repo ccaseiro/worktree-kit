@@ -45,7 +45,7 @@ then either routes to the `via=` skill or presents the entry-point choice.
 ### 1. Read the project config, parse the flags, refuse if unsafe
 
 ```bash
-eval "$(wtconf --agent)"   # BASE_BRANCH, TASK_ENTRY_SKILLS, REBUILD_TRIGGER_PATHS, …
+eval "$(wtconf --agent)"   # BASE_REF, BASE_BRANCH, BASE_ON_REMOTE, TASK_ENTRY_SKILLS, …
 
 # The bare-/skill shorthand may route ONLY to a name the project listed in
 # TASK_ENTRY_SKILLS. Empty (the default) means the shorthand never routes, so
@@ -104,17 +104,22 @@ MAIN_ROOT=$(git worktree list --porcelain | awk '/^worktree /{print $2; exit}')
 HERE=$(git rev-parse --show-toplevel)
 OLD_BR=$(git branch --show-current)
 DIRTY=$(git status --porcelain | wc -l | tr -d ' ')
-git fetch origin "$BASE_BRANCH" 2>&1 | tail -1
-UNSHIPPED=$(git rev-list --count "origin/$BASE_BRANCH..HEAD" 2>/dev/null || echo 0)
+# Fetch only a base that is actually on the remote. An integration branch that
+# several worktrees fan into may never have been pushed, and fetching it fails.
+if [ "$BASE_ON_REMOTE" = 1 ]; then git fetch origin "$BASE_BRANCH" 2>&1 | tail -1; fi
+# No `|| echo 0` here. A base that will not resolve means "cannot tell", and
+# reporting that as zero is exactly what waved real unlanded commits through.
+UNSHIPPED=$(git rev-list --count "$BASE_REF..HEAD") || UNSHIPPED=""
 echo "Worktree: $HERE"
-echo "Base:     origin/$BASE_BRANCH"
+echo "Base:     $BASE_REF"
 echo "Branch:   $OLD_BR | dirty: $DIRTY | unshipped: $UNSHIPPED | fresh: $FRESH | fresh-db: $FRESH_DB"
 echo "Entry:    ${TASK_ENTRY_SKILLS:-(none configured)}"
 ```
 
 - `HERE` == `MAIN_ROOT` → **stop**: "Run this from inside a task worktree, not the main checkout."
 - `DIRTY` > 0 → **stop**: "You have uncommitted changes. Commit, stash, or discard them first." (Never silently discard work.)
-- `UNSHIPPED` > 0 → **stop**: "This branch has `$UNSHIPPED` commit(s) not on `origin/$BASE_BRANCH`. Ship it first (`/ship-land`) or you'll lose them." This is the key guard: only reset once the previous task is actually landed.
+- `UNSHIPPED` empty → **stop**: "Cannot resolve the base `$BASE_REF`, so whether this branch has landed is unknown. Fix the base (`git config wtkit.baseBranch <branch>`) before resetting." Unknown is not zero — step 3 force-deletes this branch.
+- `UNSHIPPED` > 0 → **stop**: "This branch has `$UNSHIPPED` commit(s) not on `$BASE_REF`. Ship it first (`/ship-land`) or you'll lose them." This is the key guard: only reset once the previous task is actually landed.
 
 ### 2. Derive the new slug and branch
 
@@ -126,7 +131,7 @@ echo "Entry:    ${TASK_ENTRY_SKILLS:-(none configured)}"
 ### 3. Reset to a fresh branch off the latest base
 
 ```bash
-git switch -c "feature/$SLUG" "origin/$BASE_BRANCH"
+git switch -c "feature/$SLUG" "$BASE_REF"
 # The previous branch is already merged (UNSHIPPED == 0) — delete it to keep
 # the worktree tidy.
 git branch -D "$OLD_BR" 2>/dev/null || true
