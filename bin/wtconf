@@ -8,7 +8,9 @@
 # the conf takes effect before it lands.
 #
 # Usage:
-#   wtconf BASE_BRANCH            # -> the remote's default branch, e.g. main
+#   wtconf BASE_REF               # -> the ref to hand git, e.g. origin/main
+#   wtconf BASE_BRANCH            # -> the bare name a PR targets, e.g. main
+#   wtconf BASE_ON_REMOTE         # -> 1 when the base exists on the remote
 #   wtconf INERT_PATHS            # -> "" when the project declared none
 #   wtconf FOO fallback           # -> any conf key, with a fallback
 #   wtconf --agent                # -> shell-quoted KEY=value lines, for eval
@@ -32,10 +34,26 @@ wtkit_load_conf "$MAIN_ROOT"
 
 # The agent-facing key set. The defaults live HERE rather than in common.sh so
 # the launchers and the slash commands stay independently versionable.
-# Derived from the remote's default branch (origin/HEAD) rather than hardcoded,
-# so a develop/master/trunk repo does not have to declare the obvious. DEFAULT_BASE
-# is the ref form (origin/x) that wtkit_load_conf already resolved.
-: "${BASE_BRANCH:=${DEFAULT_BASE#origin/}}"   # branch /ship-land merges into
+#
+# The three base keys come from one resolution, done by wtkit_load_conf:
+#   BASE_REF        the ref to hand git — origin/main, or a bare local branch
+#   BASE_BRANCH     the bare name, for what genuinely wants a name (a PR target)
+#   BASE_ON_REMOTE  1 or 0 — whether fetching it, or asking a forge about it,
+#                   means anything at all
+#
+# Consumers use BASE_REF and must NOT rebuild "origin/$BASE_BRANCH". A base
+# that lives only locally — the integration branch a multi-worktree fan-in
+# collects into — has no origin/ form, and reconstructing one is what left
+# /next-task, ship-classify and the remove-workspace guard measuring against a
+# ref that does not exist.
+#
+# These are ASSIGNED, not defaulted with :=. That matters: when the run-local
+# override (git config wtkit.baseBranch) wins, a BASE_BRANCH the conf also set
+# is stale, and := would keep the stale name while BASE_REF moved — the exact
+# two-sources-of-truth split this key set exists to remove.
+BASE_REF="$DEFAULT_BASE"                # ref /ship-land merges into
+BASE_BRANCH="$DEFAULT_BASE_BRANCH"      # its bare name
+BASE_ON_REMOTE="$DEFAULT_BASE_ON_REMOTE"
 : "${MERGE_METHOD:=--merge}"            # gh pr merge flag: --merge|--squash|--rebase
 : "${INERT_PATHS:=}"                    # globs the test suite cannot observe
 : "${SHIP_SKILL:=/ship}"                # the skill /ship-land runs; empty = none
@@ -44,7 +62,7 @@ wtkit_load_conf "$MAIN_ROOT"
 : "${RESERVED_VERSION_SEGMENT:=}"       # segment reserved for out-of-band hotfixes
 : "${REBUILD_TRIGGER_PATHS:=}"          # paths whose change means rebuild the image
 
-AGENT_KEYS="BASE_BRANCH MERGE_METHOD INERT_PATHS SHIP_SKILL TASK_ENTRY_SKILLS
+AGENT_KEYS="BASE_REF BASE_BRANCH BASE_ON_REMOTE MERGE_METHOD INERT_PATHS SHIP_SKILL TASK_ENTRY_SKILLS
 VERSION_BUMP_FLOOR RESERVED_VERSION_SEGMENT REBUILD_TRIGGER_PATHS"
 
 case "${1:-}" in
