@@ -48,7 +48,21 @@ wtkit_main_root() {
 # is right far more often than a hardcoded name.
 wtkit_default_base() {
   local root="${1:-.}" head
-  [ -n "${BASE_BRANCH:-}" ] && { printf 'origin/%s' "$BASE_BRANCH"; return; }
+  # Prefer the remote-tracking ref, but fall back to a local branch of the same
+  # name: an integration branch that collects several tasks before one PR may
+  # not be pushed yet, and handing git "origin/<unpushed>" fails the launcher
+  # outright. Announce a BASE_BRANCH that matches nothing rather than silently
+  # forking from somewhere the project did not ask for.
+  if [ -n "${BASE_BRANCH:-}" ]; then
+    if git -C "$root" rev-parse --verify --quiet "refs/remotes/origin/$BASE_BRANCH" >/dev/null 2>&1; then
+      printf 'origin/%s' "$BASE_BRANCH"; return
+    fi
+    if git -C "$root" rev-parse --verify --quiet "refs/heads/$BASE_BRANCH" >/dev/null 2>&1; then
+      echo "!! BASE_BRANCH='$BASE_BRANCH' is not on origin yet; using the local branch." >&2
+      printf '%s' "$BASE_BRANCH"; return
+    fi
+    echo "!! BASE_BRANCH='$BASE_BRANCH' matches no branch; falling back to the remote default." >&2
+  fi
   head=$(git -C "$root" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || echo "")
   # A --single-branch clone never gets the ref. Ask the remote once and cache
   # it, exactly as `git remote set-head origin -a` would; failure is fine, we
