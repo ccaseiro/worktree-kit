@@ -171,7 +171,10 @@ wtkit_inherit_env_keys() {
   [ -n "${INHERIT_ENV_KEYS:-}" ] || return 0
   [ -f "$MAIN_ROOT/.env" ] || return 0
   for key in $INHERIT_ENV_KEYS; do
-    val=$(grep "^${key}=" "$MAIN_ROOT/.env" 2>/dev/null | head -1 | sed "s/^${key}=//")
+    # || true: grep exits 1 on a key the main .env does not carry, and every
+    # bin/ caller runs with pipefail, so an absent key would abort the whole
+    # worktree setup instead of being skipped by the -n test below.
+    val=$(grep "^${key}=" "$MAIN_ROOT/.env" 2>/dev/null | head -1 | sed "s/^${key}=//") || true
     [ -n "$val" ] || continue
     if grep -q "^${key}=" "$envfile" 2>/dev/null; then
       # Not sed: an & in the value is replacement syntax there, so a key
@@ -200,7 +203,7 @@ wtkit_inherit_env_keys() {
 
 # Read one KEY's value out of an env file. Deliberately the same shape as the
 # reader in wtkit_inherit_env_keys.
-wtkit_env_get() { grep "^$2=" "$1" 2>/dev/null | head -1 | sed "s/^$2=//"; }
+wtkit_env_get() { grep "^$2=" "$1" 2>/dev/null | head -1 | sed "s/^$2=//" || true; }
 
 # wtkit_read_env <wt_dir> — load PROJ / WEB_PORT / DB_PORT from an existing
 # .env, and fail if there is none. Once a worktree has an .env, that file is the
