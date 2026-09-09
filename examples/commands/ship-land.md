@@ -39,6 +39,18 @@ echo "floor=${VERSION_BUMP_FLOOR:-(skill default)} reserved=${RESERVED_VERSION_S
 echo "inert=${INERT_PATHS:-(none — tests never skipped)}"
 ```
 
+If `BASE_ON_REMOTE` is **0**, **stop** before anything else:
+
+> The base `$BASE_REF` is a local branch, so there is nothing to open a pull
+> request against. Use `/land` to merge into it git-natively, and `/ship-land`
+> later when the whole integration branch goes to the remote.
+
+This is a signpost, not a failure. Everything after this point — the ship
+skill, the version bump, `gh pr merge` — assumes a base that exists on the
+remote, and would otherwise fail several minutes in, after running the tests,
+with an error about a ref `gh` cannot find. Stopping here costs nothing and
+says what to do instead.
+
 If `SHIP_SKILL` is empty, **stop**: this project has not adopted a ship
 workflow, so there is nothing for `/ship-land` to run. Tell the user to set
 `SHIP_SKILL` in `.claude/workspace.conf` (or ship by hand).

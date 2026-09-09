@@ -27,7 +27,7 @@ CMDDIR="${CLAUDE_COMMANDS_DIR:-$HOME/.claude/commands}"
 CMDS=(new-workspace new-task start-worktree remove-workspace
       wtconf ship-lock ship-classify land-local
       next-task-args next-task-preflight next-task-reset ship-land-args)
-SLASH=(next-task.md ship-land.md open-worktree.md)
+SLASH=(next-task.md ship-land.md open-worktree.md land.md)
 
 WANT_COMMANDS=1
 for a in "$@"; do [ "$a" = "--no-commands" ] && WANT_COMMANDS=0; done

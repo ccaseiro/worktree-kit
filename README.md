@@ -152,14 +152,24 @@ prose that drifts.
 
 ## Slash commands
 
-Two Claude Code commands ship with the kit, installed at user scope so they
+Four Claude Code commands ship with the kit, installed at user scope so they
 work in any repo. They are the same shape as everything else here: the logic
 lives in scripts, and the project's facts live in `workspace.conf`.
 
 | Command | Does |
 |---|---|
-| `/next-task <desc>` | Resets the **current** worktree to a fresh branch off the base and hands off — keeping the session's context. Use it after `/ship-land`, which leaves the worktree behind. |
+| `/next-task <desc>` | Resets the **current** worktree to a fresh branch off the base and hands off — keeping the session's context. Use it after landing, which leaves the worktree behind. |
+| `/land` | Merges this worktree's branch into the repo's **local** integration branch: merge, test, then fast-forward under the lock. No PR, no `gh`, no VERSION bump. |
 | `/ship-land` | Runs the project's ship skill on the current branch, then merges the PR. Serializes itself across worktrees so two runs cannot collide on `VERSION`/`CHANGELOG.md`. |
+| `/open-worktree` | Brings an existing worktree's stack up and prints its URL. |
+
+**`/land` or `/ship-land`?** They are two ends of the same feature.
+`/land` merges one agent's work into an integration branch that lives only on
+this machine — no version bump, no PR, because those belong to the feature as a
+whole rather than to each agent's slice of it. `/ship-land` takes that whole
+branch to the remote through the project's ship skill. Reaching for
+`/ship-land` while the base is local stops early and points you at `/land`,
+rather than failing minutes later inside `gh`.
 
 They lean on three helpers you can also run by hand:
 
