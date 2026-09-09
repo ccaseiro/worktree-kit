@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Test stub. The launchers end by starting a Claude session; a suite that
+# spawns real ones would be slow, noisy, and would burn tokens. This shadows
+# the real binary for the whole suite so an oversight cannot reach it.
+echo "[stub claude] $*"
+exit 0

@@ -199,6 +199,30 @@ remote's own default branch (`origin/HEAD`), else to `origin/main`. Setting
 worktree silently forks from a stale `origin/main`, and the same key already
 tells `/ship-land` where to merge, so the two cannot drift apart.
 
+## Tests
+
+```bash
+make bootstrap   # once — clones bats-core into tests/vendor/ (gitignored)
+make test
+```
+
+`make bootstrap` is a no-op if you already have `bats` on your `PATH`; nothing
+is vendored into the repo and nothing needs root. Every test builds a real
+throwaway repo — a bare remote, a clone whose default branch is *not* `main`,
+local-only branches, worktrees — because every bug this suite pins was a wrong
+answer from real `git` against a ref that did or did not exist.
+
+Two safety rails, both learned the hard way while writing it. The fixture
+builders `cd` into the fixture and assert they got there, because the `bin/`
+commands resolve their target from the current directory and `bats` runs from
+this checkout — a test that forgot to `cd` would point `remove-workspace`, which
+force-deletes branches, at your own repo. And `tests/helpers/stub/claude`
+shadows the real CLI for the whole suite, so no test can spawn a session.
+
+Tests named `REGRESSION:` pin behaviour that was broken, shipped, and fixed.
+Check they still bite: reintroduce the bug and confirm those tests, and only
+those, go red.
+
 ## Requirements
 
 macOS or Linux, bash, git, the `claude` CLI, and `lsof` for the port probe.
