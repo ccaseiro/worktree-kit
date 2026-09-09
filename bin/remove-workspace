@@ -83,29 +83,68 @@ if git -C "$WT_DIR" rev-parse --verify --quiet "$DEFAULT_BASE" >/dev/null 2>&1; 
   UNSHIPPED=$(git -C "$WT_DIR" rev-list --count "$DEFAULT_BASE..HEAD") || UNSHIPPED=""
 fi
 
+# Is this branch's work contained somewhere else? That single fact decides
+# whether --force is safe, and it is the difference between a refusal the user
+# acts on and a refusal they learn to bypass.
+WITNESS=$(wtkit_landing_witness "$WT_DIR" HEAD 2>/dev/null) || WITNESS=""
+
 echo "Workspace: $N"
 echo "Worktree:  $WT_DIR"
 echo "Branch:    ${BR:-<detached>}"
 echo "Base:      $DEFAULT_BASE"
 echo "Dirty:     $DIRTY | Unshipped commits: ${UNSHIPPED:-UNKNOWN (base unresolvable)}"
 
+# Says where the work stands, for whichever refusal is about to print it.
+say_witness() {
+  if [ -n "$WITNESS" ]; then
+    echo "  Its commits ARE all contained in $WITNESS, so the work has most" >&2
+    echo "  likely landed by another route. If that is where it went, --force" >&2
+    echo "  discards nothing." >&2
+  else
+    echo "  Nothing else in this repo contains those commits either — not even" >&2
+    echo "  ${WTKIT_REMOTE:-origin}'s default branch. If you --force, they are gone." >&2
+  fi
+}
+
 # ---- safety gate -----------------------------------------------------------
-# Unknown first, and on its own: it is a different refusal from "you have work
-# here", and telling the user which one it is decides whether they land the
-# branch or fix their base config.
+# Two refusals, deliberately worded differently. "I cannot tell" and "you have
+# work here" call for different actions from the user: one is a config to fix,
+# the other is a branch to land.
 if [ "$FORCE" -eq 0 ] && [ -z "$UNSHIPPED" ]; then
   echo "" >&2
-  echo "Refusing: cannot resolve the base '$DEFAULT_BASE', so whether this" >&2
-  echo "workspace's commits have landed is UNKNOWN — which is not the same as" >&2
-  echo "none. Point the base at something that exists:" >&2
-  echo "  git config wtkit.baseBranch <branch>" >&2
-  echo "or pass --force to delete the branch regardless." >&2
+  echo "Refusing: cannot resolve the base '$DEFAULT_BASE', so whether workspace" >&2
+  echo "$N's commits have landed is UNKNOWN — which is not the same as none." >&2
+  echo "" >&2
+  say_witness
+  echo "" >&2
+  echo "  Point the base at a branch that exists:" >&2
+  echo "    git config wtkit.baseBranch <branch>" >&2
+  echo "  or pass --force to delete regardless." >&2
   exit 1
 fi
 if [ "$FORCE" -eq 0 ] && { [ "$DIRTY" -gt 0 ] || [ "$UNSHIPPED" -gt 0 ]; }; then
   echo "" >&2
-  echo "Refusing: this workspace has uncommitted ($DIRTY) or unshipped ($UNSHIPPED) work." >&2
-  echo "Land it first, or pass --force to DISCARD it." >&2
+  if [ "$UNSHIPPED" -gt 0 ]; then
+    echo "Refusing: workspace $N has $UNSHIPPED commit(s) not on $DEFAULT_BASE." >&2
+    echo "" >&2
+    # Show them. A count tells the user something is there; the subjects tell
+    # them whether it is work they care about.
+    git -C "$WT_DIR" log --oneline --no-decorate "$DEFAULT_BASE..HEAD" \
+      | head -10 | sed 's/^/    /' >&2
+    [ "$UNSHIPPED" -gt 10 ] && echo "    … and $(( UNSHIPPED - 10 )) more" >&2
+    echo "" >&2
+    say_witness
+    echo "" >&2
+    echo "  Land them (land-local), or pass --force to DISCARD them." >&2
+  fi
+  if [ "$DIRTY" -gt 0 ]; then
+    echo "Refusing: workspace $N has $DIRTY uncommitted change(s)." >&2
+    echo "" >&2
+    git -C "$WT_DIR" status --short 2>/dev/null | head -10 | sed 's/^/    /' >&2
+    [ "$DIRTY" -gt 10 ] && echo "    … and $(( DIRTY - 10 )) more" >&2
+    echo "" >&2
+    echo "  Commit, stash, or discard them, or pass --force to DISCARD them." >&2
+  fi
   exit 1
 fi
 

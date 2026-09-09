@@ -206,6 +206,29 @@ wtkit_fetch_base_ref() {
   return 0
 }
 
+
+# wtkit_landing_witness <root> [tip]
+#   Is <tip> already contained somewhere other than the configured base?
+#   Prints that ref and returns 0, or returns 1.
+#
+#   This exists so a refusal can tell the user whether --force is safe. The
+#   configured base is a moving target: an integration branch gets deleted once
+#   its PR lands, and from then on the teardown guard can no longer resolve it
+#   and refuses forever — for work that IS safely landed, by a route the guard
+#   cannot see. A user who hits that three times stops reading and starts
+#   passing --force by reflex, which is precisely when it will cost them.
+#
+#   The witness is the remote's own default branch, not a guessed list of
+#   main/master/develop. Guessing branch names is the habit this kit removed.
+wtkit_landing_witness() {
+  local root="${1:-.}" tip="${2:-HEAD}" rem="${WTKIT_REMOTE:-origin}" head
+  head=$(git -C "$root" symbolic-ref --quiet --short "refs/remotes/$rem/HEAD" 2>/dev/null || echo "")
+  [ -n "$head" ] || return 1
+  git -C "$root" rev-parse --verify --quiet "$head" >/dev/null 2>&1 || return 1
+  git -C "$root" merge-base --is-ancestor "$tip" "$head" 2>/dev/null || return 1
+  printf '%s' "$head"
+}
+
 # ---- config -----------------------------------------------------------------
 # Sets REPO, PROJECT_SLUG, USE_DOCKER, the four port bases, INHERIT_ENV_KEYS,
 # WORKSPACE_INITIAL_PROMPT_FMT, FINISH_HINT, WTKIT_REMOTE, DEFAULT_BASE,
