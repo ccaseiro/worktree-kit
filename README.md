@@ -9,6 +9,7 @@ own isolated git worktree and docker stack.
 | `new-task <slug>` | A **throwaway** worktree plus a fresh session, for one independent task. |
 | `start-worktree [name]` | Brings an **existing** worktree's stack up and prints its URL. Idempotent — configures, starts, or just reports, depending on what it finds. |
 | `remove-workspace <n>` | Tears a workspace down safely: stack `down -v` → worktree → branch. Refuses if there is uncommitted or unshipped work. |
+| `land-local` | Merges the current worktree's branch into the repo's **local** integration branch: merge, test, then fast-forward under a lock. No PR, no `gh`, no VERSION bump. |
 
 Worktrees live under `<repo>/.claude/worktrees/<name>`, each with its own
 `COMPOSE_PROJECT_NAME`, database and collision-checked ports, so parallel
@@ -32,8 +33,8 @@ clobbered — the installer says it skipped it and leaves your version alone.
 
 ## Per-project setup
 
-The commands are generic. Everything project-specific lives in one committed
-file, `<repo>/.claude/workspace.conf`, sourced as bash:
+The commands are generic. Everything project-specific lives in
+`<repo>/.claude/workspace.conf`, sourced as bash:
 
 ```bash
 PROJECT_SLUG="my_app"            # docker project + database name prefix
@@ -86,6 +87,34 @@ each developer's own main-checkout `.env` into the worktree's.
 The conf is read from the main checkout, falling back to the current worktree
 when the main checkout has none — so a branch that adds or edits it takes
 effect before it lands.
+
+### Where configuration lives
+
+Two places, deliberately:
+
+- **`<repo>/.claude/workspace.conf`** — the project's durable settings: slug,
+  port bands, inherited env keys, the default base. Commit it if your team uses
+  the kit. Nothing requires you to: the launchers read it off disk in the main
+  checkout, never through git, so it works fine gitignored — which is what you
+  want if you would rather not advertise the toolchain. The slash commands are
+  installed at user scope, so they keep working either way.
+- **`git config wtkit.baseBranch`** — the base for *right now*. An integration
+  branch that several worktrees fan into is a this-clone, this-week choice, not
+  a project setting; committing its name would put a branch that dies next week
+  into a PR and hand a fresh clone a base that no longer exists. It lives in the
+  shared common git dir, so every worktree of the repo reads the same value.
+
+```bash
+git config wtkit.baseBranch feat/something   # start a fan-in
+git config --unset wtkit.baseBranch          # back to the project default
+```
+
+When you set it explicitly the kit stays quiet about the base not being on the
+remote — that is the whole point of the key. A `BASE_BRANCH` in the conf that
+the remote does not have still warns, because that one is usually a typo.
+
+`git config wtkit.remote` overrides the remote name the same way, for a repo
+whose remote is not called `origin`.
 
 ## Reopening a worktree
 
