@@ -119,13 +119,25 @@ wtkit_resolve_base_ref() {
 # disagree with it, and a repo whose worktrees branch from develop while its
 # PRs land on main is a trap.
 wtkit_default_base() {
-  local root="${1:-.}" want head pair rem="${WTKIT_REMOTE:-origin}"
+  local root="${1:-.}" want head pair src rem="${WTKIT_REMOTE:-origin}"
   want=$(git -C "$root" config --get wtkit.baseBranch 2>/dev/null) || want=""
-  [ -n "$want" ] || want="${BASE_BRANCH:-}"
+  if [ -n "$want" ]; then src=override; else want="${BASE_BRANCH:-}"; src=conf; fi
   if [ -n "$want" ]; then
     if pair=$(wtkit_resolve_base_ref "$root" "$want"); then
       case "$pair" in
-        *' 0') echo "!! base '$want' is not on $rem yet; using the local branch." >&2 ;;
+        *' 0')
+          # Announce a local base only when nobody asked for one. Running
+          # `git config wtkit.baseBranch` IS asking: that key exists precisely
+          # to point the kit at an unpushed integration branch, so during a
+          # fan-in the "not on the remote yet" news is true on every single
+          # command — and a warning that fires every time is one nobody reads
+          # by the third day, including the times it matters.
+          #
+          # From workspace.conf it stays loud. A committed BASE_BRANCH naming a
+          # branch the remote does not have is far more likely a typo or a
+          # branch someone deleted than a deliberate local base.
+          [ "$src" = override ] || \
+            echo "!! base '$want' is not on $rem yet; using the local branch." >&2 ;;
       esac
       printf '%s' "$pair"; return
     fi

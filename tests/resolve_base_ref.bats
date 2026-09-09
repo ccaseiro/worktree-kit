@@ -75,6 +75,33 @@ default_base() {  # honours BASE_BRANCH / git config, prints the triple
   [[ "$output" == *"origin/develop develop 1"* ]]
 }
 
+@test "an explicitly configured local base does not warn on every command" {
+  # During a fan-in this fires on every invocation of every command. A warning
+  # that always fires is one nobody reads by the third day.
+  wtk_mk_integration feat/x
+  wtk_set_base feat/x
+  run bash -c "set -euo pipefail; source '$WTKIT_LIB/common.sh'
+               wtkit_default_base '$REPO' 2>&1"
+  [ "$output" = "feat/x feat/x 0" ]
+}
+
+@test "but a conf BASE_BRANCH that is not on the remote still warns" {
+  # A committed BASE_BRANCH naming a branch the remote does not have is far
+  # likelier a typo, or a branch someone deleted, than a deliberate local base.
+  wtk_mk_integration feat/x
+  run bash -c "set -euo pipefail; source '$WTKIT_LIB/common.sh'
+               BASE_BRANCH=feat/x; wtkit_default_base '$REPO' 2>&1"
+  [[ "$output" == *"is not on origin yet"* ]]
+}
+
+@test "a base matching nothing still warns, whatever set it" {
+  # That one is always a surprise.
+  wtk_set_base ghost
+  run bash -c "set -euo pipefail; source '$WTKIT_LIB/common.sh'
+               wtkit_default_base '$REPO' 2>&1"
+  [[ "$output" == *"matches no branch"* ]]
+}
+
 @test "the local-fallback warning goes to stderr, never stdout" {
   # wtkit_default_base is read through $(...); a warning on stdout would be
   # captured as part of the ref.
