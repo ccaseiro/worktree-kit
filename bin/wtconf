@@ -8,6 +8,7 @@
 # the conf takes effect before it lands.
 #
 # Usage:
+#   wtconf REMOTE_NAME            # -> the remote this repo talks to
 #   wtconf BASE_REF               # -> the ref to hand git, e.g. origin/main
 #   wtconf BASE_BRANCH            # -> the bare name a PR targets, e.g. main
 #   wtconf BASE_ON_REMOTE         # -> 1 when the base exists on the remote
@@ -51,6 +52,7 @@ wtkit_load_conf "$MAIN_ROOT"
 # override (git config wtkit.baseBranch) wins, a BASE_BRANCH the conf also set
 # is stale, and := would keep the stale name while BASE_REF moved — the exact
 # two-sources-of-truth split this key set exists to remove.
+REMOTE_NAME="$WTKIT_REMOTE"             # "origin" is a convention, not a rule
 BASE_REF="$DEFAULT_BASE"                # ref /ship-land merges into
 BASE_BRANCH="$DEFAULT_BASE_BRANCH"      # its bare name
 BASE_ON_REMOTE="$DEFAULT_BASE_ON_REMOTE"
@@ -62,7 +64,7 @@ BASE_ON_REMOTE="$DEFAULT_BASE_ON_REMOTE"
 : "${RESERVED_VERSION_SEGMENT:=}"       # segment reserved for out-of-band hotfixes
 : "${REBUILD_TRIGGER_PATHS:=}"          # paths whose change means rebuild the image
 
-AGENT_KEYS="BASE_REF BASE_BRANCH BASE_ON_REMOTE MERGE_METHOD INERT_PATHS SHIP_SKILL TASK_ENTRY_SKILLS
+AGENT_KEYS="REMOTE_NAME BASE_REF BASE_BRANCH BASE_ON_REMOTE MERGE_METHOD INERT_PATHS SHIP_SKILL TASK_ENTRY_SKILLS
 VERSION_BUMP_FLOOR RESERVED_VERSION_SEGMENT REBUILD_TRIGGER_PATHS"
 
 case "${1:-}" in

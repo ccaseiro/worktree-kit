@@ -18,7 +18,7 @@
 #   --force           Remove even with uncommitted / unshipped work (DISCARDS it).
 #   --yes | -y        Skip the confirmation prompt.
 #   --tmux            Also close the ws-<n> tmux window (default: leave it).
-#   --delete-remote   Also delete origin/<branch> if it still exists.
+#   --delete-remote   Also delete <remote>/<branch> if it still exists.
 #   -h | --help       Show this help.
 #
 set -euo pipefail
@@ -147,9 +147,9 @@ fi
 
 # ---- 4. optionally delete the remote branch --------------------------------
 if [ "$DELETE_REMOTE" -eq 1 ] && [ -n "$BR" ] && \
-   git -C "$MAIN_ROOT" show-ref --verify --quiet "refs/remotes/origin/$BR"; then
-  echo "==> Deleting remote branch origin/$BR"
-  git -C "$MAIN_ROOT" push origin --delete "$BR" 2>&1 | tail -2 || true
+   git -C "$MAIN_ROOT" show-ref --verify --quiet "refs/remotes/$WTKIT_REMOTE/$BR"; then
+  echo "==> Deleting remote branch $WTKIT_REMOTE/$BR"
+  git -C "$MAIN_ROOT" push "$WTKIT_REMOTE" --delete "$BR" 2>&1 | tail -2 || true
 fi
 
 # ---- 5. close the tmux window (only with --tmux) ---------------------------

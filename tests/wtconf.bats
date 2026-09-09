@@ -52,9 +52,14 @@ agent() { ( cd "${1:-$REPO}" && wtconf --agent 2>/dev/null ); }
   [ "$output" = "origin/develop|1" ]
 }
 
-@test "--keys lists the three base keys first" {
-  run bash -c "cd '$REPO' && wtconf --keys 2>/dev/null | head -3 | tr '\n' ' '"
-  [ "$output" = "BASE_REF BASE_BRANCH BASE_ON_REMOTE " ]
+@test "--keys leads with the remote and the three base keys" {
+  run bash -c "cd '$REPO' && wtconf --keys 2>/dev/null | head -4 | tr '\n' ' '"
+  [ "$output" = "REMOTE_NAME BASE_REF BASE_BRANCH BASE_ON_REMOTE " ]
+}
+
+@test "exports the remote name" {
+  run agent
+  [[ "$output" == *"REMOTE_NAME=origin"* ]]
 }
 
 @test "a single key can be read by name" {

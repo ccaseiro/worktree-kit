@@ -111,8 +111,8 @@ if [ -n "$(git status --porcelain)" ]; then
   exit 2
 fi
 if [ "${DEFAULT_BASE_ON_REMOTE:-0}" -eq 1 ]; then
-  echo "note: '$INTEG' also exists on origin. land-local advances the LOCAL"
-  echo "      branch only; it will be ahead of origin until you push it."
+  echo "note: '$INTEG' also exists on $WTKIT_REMOTE. land-local advances the"
+  echo "      LOCAL branch only; it will be ahead until you push it."
 fi
 
 # ---- helpers ---------------------------------------------------------------

@@ -36,6 +36,36 @@ wtkit_main_root() {
   printf '%s' "$root"
 }
 
+# wtkit_resolve_remote <root>
+#   Which remote this repo talks to. "origin" is a convention, not a rule, and
+#   a repo cloned with `git clone -o upstream` — or an AWS CodeCommit / Gerrit
+#   checkout set up by hand — has never had one.
+#
+#   Order: git config wtkit.remote, then REMOTE_NAME from the conf, then the
+#   sole remote if there is exactly one and it is not called origin, then
+#   origin. The sole-remote step cannot change behaviour for anyone who has an
+#   origin; it only rescues the repo that would otherwise measure everything
+#   against a remote that does not exist.
+wtkit_resolve_remote() {
+  local root="${1:-.}" want n real
+  want=$(git -C "$root" config --get wtkit.remote 2>/dev/null) || want=""
+  [ -n "$want" ] || want="${REMOTE_NAME:-}"
+  if [ -n "$want" ]; then printf '%s' "$want"; return 0; fi
+  # Presence is not existence. A global `remote.origin.<anything>` in a user's
+  # ~/.gitconfig — `remote.origin.tagopt=--tags` is a common one — makes
+  # `git remote` list origin in EVERY repository, with no URL behind it. Ask
+  # for the URL instead, or the sole-remote rescue below never fires for the
+  # people who need it.
+  if ! git -C "$root" config --get remote.origin.url >/dev/null 2>&1; then
+    real=$(git -C "$root" remote | while read -r r; do
+             git -C "$root" config --get "remote.$r.url" >/dev/null 2>&1 && printf '%s\n' "$r"
+           done)
+    n=$(printf '%s' "$real" | grep -c . || true)
+    if [ "$n" = "1" ]; then printf '%s' "$real" | head -1 | tr -d '\n'; return 0; fi
+  fi
+  printf 'origin'
+}
+
 # wtkit_resolve_base_ref <root> <branch>
 #   The one place that answers "given this branch NAME, what ref do I actually
 #   use, and is it on the remote?" Prints "<ref> <branch> <on_remote>", where
@@ -53,10 +83,10 @@ wtkit_main_root() {
 #   correctly here and then failed in every consumer that pasted the prefix
 #   back on, including the guard that force-deletes branches.
 wtkit_resolve_base_ref() {
-  local root="${1:-.}" branch="${2:-}"
+  local root="${1:-.}" branch="${2:-}" rem="${WTKIT_REMOTE:-origin}"
   [ -n "$branch" ] || return 1
-  if git -C "$root" rev-parse --verify --quiet "refs/remotes/origin/$branch" >/dev/null 2>&1; then
-    printf 'origin/%s %s 1' "$branch" "$branch"; return 0
+  if git -C "$root" rev-parse --verify --quiet "refs/remotes/$rem/$branch" >/dev/null 2>&1; then
+    printf '%s/%s %s 1' "$rem" "$branch" "$branch"; return 0
   fi
   if git -C "$root" rev-parse --verify --quiet "refs/heads/$branch" >/dev/null 2>&1; then
     printf '%s %s 0' "$branch" "$branch"; return 0
@@ -89,32 +119,32 @@ wtkit_resolve_base_ref() {
 # disagree with it, and a repo whose worktrees branch from develop while its
 # PRs land on main is a trap.
 wtkit_default_base() {
-  local root="${1:-.}" want head pair
+  local root="${1:-.}" want head pair rem="${WTKIT_REMOTE:-origin}"
   want=$(git -C "$root" config --get wtkit.baseBranch 2>/dev/null) || want=""
   [ -n "$want" ] || want="${BASE_BRANCH:-}"
   if [ -n "$want" ]; then
     if pair=$(wtkit_resolve_base_ref "$root" "$want"); then
       case "$pair" in
-        *' 0') echo "!! base '$want' is not on origin yet; using the local branch." >&2 ;;
+        *' 0') echo "!! base '$want' is not on $rem yet; using the local branch." >&2 ;;
       esac
       printf '%s' "$pair"; return
     fi
     echo "!! base '$want' matches no branch; falling back to the remote default." >&2
   fi
-  head=$(git -C "$root" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || echo "")
+  head=$(git -C "$root" symbolic-ref --quiet --short "refs/remotes/$rem/HEAD" 2>/dev/null || echo "")
   # A --single-branch clone never gets the ref. Ask the remote once and cache
-  # it, exactly as `git remote set-head origin -a` would; failure is fine, we
+  # it, exactly as `git remote set-head <remote> -a` would; failure is fine, we
   # just fall through to the historical default.
   if [ -z "$head" ]; then
-    git -C "$root" remote set-head origin --auto >/dev/null 2>&1 || true
-    head=$(git -C "$root" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || echo "")
+    git -C "$root" remote set-head "$rem" --auto >/dev/null 2>&1 || true
+    head=$(git -C "$root" symbolic-ref --quiet --short "refs/remotes/$rem/HEAD" 2>/dev/null || echo "")
   fi
   # Route the remote's own answer back through the resolver rather than
-  # trusting the "origin/" prefix, so one code path decides what a ref is.
-  if [ -n "$head" ] && pair=$(wtkit_resolve_base_ref "$root" "${head#origin/}"); then
+  # trusting the prefix, so one code path decides what a ref is.
+  if [ -n "$head" ] && pair=$(wtkit_resolve_base_ref "$root" "${head#"$rem"/}"); then
     printf '%s' "$pair"; return
   fi
-  printf 'origin/main main 1'
+  printf '%s/main main 1' "$rem"
 }
 
 
@@ -176,6 +206,9 @@ wtkit_load_conf() {
     . "$WTKIT_CONF"
   fi
 
+  # The remote is resolved FIRST: every base lookup below asks it what exists.
+  WTKIT_REMOTE=$(wtkit_resolve_remote "$MAIN_ROOT")
+
   # Resolved after the conf is sourced so a BASE_BRANCH it sets is honoured.
   # A caller's --base still wins: the launchers only fall back to this.
   #
@@ -191,8 +224,8 @@ wtkit_load_conf() {
     # stay consistent; a pinned ref is already a ref, so the prefix is only
     # stripped when it actually names the remote.
     case "$DEFAULT_BASE" in
-      origin/*) DEFAULT_BASE_BRANCH="${DEFAULT_BASE#origin/}"; DEFAULT_BASE_ON_REMOTE=1 ;;
-      *)        DEFAULT_BASE_BRANCH="$DEFAULT_BASE";           DEFAULT_BASE_ON_REMOTE=0 ;;
+      "$WTKIT_REMOTE"/*) DEFAULT_BASE_BRANCH="${DEFAULT_BASE#"$WTKIT_REMOTE"/}"; DEFAULT_BASE_ON_REMOTE=1 ;;
+      *)                 DEFAULT_BASE_BRANCH="$DEFAULT_BASE";                    DEFAULT_BASE_ON_REMOTE=0 ;;
     esac
   fi
 
