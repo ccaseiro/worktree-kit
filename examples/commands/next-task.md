@@ -44,87 +44,29 @@ then either routes to the `via=` skill or presents the entry-point choice.
 
 ### 1. Read the project config, parse the flags, refuse if unsafe
 
+Both halves of this run as scripts. The parsing is security-sensitive and the
+guard stands in front of a `git branch -D`; neither belongs in prose that gets
+re-read and re-interpreted on every invocation. `make test` covers both.
+
 ```bash
-eval "$(wtconf --agent)"   # REMOTE_NAME, BASE_REF, BASE_BRANCH, BASE_ON_REMOTE, TASK_ENTRY_SKILLS, …
+eval "$(wtconf --agent)"   # REMOTE_NAME, BASE_REF, BASE_BRANCH, TASK_ENTRY_SKILLS, …
 
-# The bare-/skill shorthand may route ONLY to a name the project listed in
-# TASK_ENTRY_SKILLS. Empty (the default) means the shorthand never routes, so
-# an unconfigured repo can never fire a command that does not exist. Keep
-# destructive names (deploy, rollback, push, ship*) OUT of that key: a bug
-# report often starts with one ("/deploy fails on staging").
-VIA_OK=" $TASK_ENTRY_SKILLS "
-
-# Capture the raw argument string ONCE, into a quoted heredoc. Claude Code
-# splices the user's text in verbatim BEFORE the shell parses it, so a prose
-# description like "corrigir o 500 (criar & guardar)" would otherwise be read
-# as shell: the parentheses are a syntax error, and `backticks`, $(...), ; and
-# > would RUN. A quoted delimiter makes every byte inert text.
-ARGS=$(cat <<'GSTACK_EOF'
+# The heredoc stays HERE because $ARGUMENTS is spliced in by Claude Code before
+# any shell sees it — a quoted delimiter is what makes those bytes inert text
+# rather than shell. next-task-args reads them on stdin and never re-expands.
+eval "$(next-task-args <<'GSTACK_EOF'
 $ARGUMENTS
 GSTACK_EOF
-)
-# zsh does not word-split unquoted parameters and bash does; the tool shell is
-# not guaranteed to be either, so ask for the same behaviour explicitly.
-[ -n "${ZSH_VERSION:-}" ] && setopt shwordsplit
+)"                          # -> FRESH, FRESH_DB, SLUG, VIA, DESC
 
-FRESH=no; FRESH_DB=no; SLUG=""; VIA=""; DESC=""
-set -f   # no globbing: "/opt/*" in a description must stay literal
-
-# Pre-scan for an explicit via= FIRST, so the shorthand's "no explicit via= was
-# given" rule holds regardless of token order. VIA_SEEN is tracked separately
-# from the value: a bare "via=" must still suppress the shorthand, or an empty
-# value would read as "no via= given".
-VIA_SEEN=no; VIA_EXPLICIT=""
-for tok in $ARGS; do
-  case "$tok" in via=*) VIA_SEEN=yes; VIA_EXPLICIT="${tok#via=}"; VIA_EXPLICIT="${VIA_EXPLICIT#/}" ;; esac
-done
-
-for tok in $ARGS; do
-  case "$tok" in
-    --fresh) FRESH=yes ;;
-    --fresh-db) FRESH_DB=yes ;;
-    slug=*) SLUG="${tok#slug=}" ;;
-    via=*) ;;                          # already captured by the pre-scan
-    /*) _c="${tok#/}"; _ok=no
-        case "$_c" in
-          *[!a-z0-9-]*) ;;             # defense in depth: bare skill names only
-          *) case "$VIA_OK" in
-               *" $_c "*) [ -z "$DESC" ] && [ "$VIA_SEEN" = no ] && _ok=yes ;;
-             esac ;;
-        esac
-        if [ "$_ok" = yes ]; then VIA="$_c"; else DESC="$DESC $tok"; fi ;;
-    *) DESC="$DESC $tok" ;;
-  esac
-done
-[ -n "$VIA_EXPLICIT" ] && VIA="$VIA_EXPLICIT"   # explicit always wins
-set +f
-DESC="${DESC# }"
-
-MAIN_ROOT=$(git worktree list --porcelain | awk '/^worktree /{print $2; exit}')
-HERE=$(git rev-parse --show-toplevel)
-OLD_BR=$(git branch --show-current)
-DIRTY=$(git status --porcelain | wc -l | tr -d ' ')
-# Fetch only a base that is actually on the remote. An integration branch that
-# several worktrees fan into may never have been pushed, and fetching it fails.
-# Say so when the fetch fails: UNSHIPPED below decides whether this branch gets
-# reset away, and a stale base makes that number wrong without looking wrong.
-if [ "$BASE_ON_REMOTE" = 1 ]; then
-  git fetch "$REMOTE_NAME" "$BASE_BRANCH" 2>&1 | tail -1 \
-    || echo "!! fetch of $REMOTE_NAME/$BASE_BRANCH failed — the count below is against a possibly stale base"
-fi
-# No `|| echo 0` here. A base that will not resolve means "cannot tell", and
-# reporting that as zero is exactly what waved real unlanded commits through.
-UNSHIPPED=$(git rev-list --count "$BASE_REF..HEAD") || UNSHIPPED=""
-echo "Worktree: $HERE"
-echo "Base:     $BASE_REF"
-echo "Branch:   $OLD_BR | dirty: $DIRTY | unshipped: $UNSHIPPED | fresh: $FRESH | fresh-db: $FRESH_DB"
-echo "Entry:    ${TASK_ENTRY_SKILLS:-(none configured)}"
+next-task-preflight         # -> report; exits non-zero on any stop condition
 ```
 
-- `HERE` == `MAIN_ROOT` → **stop**: "Run this from inside a task worktree, not the main checkout."
-- `DIRTY` > 0 → **stop**: "You have uncommitted changes. Commit, stash, or discard them first." (Never silently discard work.)
-- `UNSHIPPED` empty → **stop**: "Cannot resolve the base `$BASE_REF`, so whether this branch has landed is unknown. Fix the base (`git config wtkit.baseBranch <branch>`) before resetting." Unknown is not zero — step 3 force-deletes this branch.
-- `UNSHIPPED` > 0 → **stop**: "This branch has `$UNSHIPPED` commit(s) not on `$BASE_REF`. Ship it first (`/ship-land`) or you'll lose them." This is the key guard: only reset once the previous task is actually landed.
+- `next-task-preflight` exiting non-zero → **stop** and show its message
+  verbatim. It has already checked all four conditions: run from the main
+  checkout, uncommitted changes, a base it cannot resolve (unknown is not
+  zero — step 3 force-deletes this branch), and commits not yet landed.
+- Otherwise continue. `FRESH`, `FRESH_DB`, `SLUG`, `VIA` and `DESC` are set.
 
 ### 2. Derive the new slug and branch
 
@@ -136,23 +78,14 @@ echo "Entry:    ${TASK_ENTRY_SKILLS:-(none configured)}"
 ### 3. Reset to a fresh branch off the latest base
 
 ```bash
-git switch -c "feature/$SLUG" "$BASE_REF"
-# The previous branch is already merged (UNSHIPPED == 0) — delete it to keep
-# the worktree tidy.
-git branch -D "$OLD_BR" 2>/dev/null || true
-git branch --show-current
+next-task-reset "$SLUG"
 ```
 
-**Verify the switch actually landed.** If `git switch` reports an error (a
-tracking-config failure is the one seen in the wild), the branch ref can be
-created and the index updated while HEAD stays behind — the worktree then looks
-dirty with the base's own changes staged. Re-run `git switch feature/<slug>` to
-complete it, and confirm `git status --porcelain` is empty before continuing.
-Do NOT discard anything to "clean up" that state.
-
-The worktree directory keeps its name (in a workspace it stays
-`workspace-<n>`) — cosmetic, and deliberately so: the compose project name,
-ports and stack are unchanged, so nothing needs rebuilding.
+`next-task-reset` re-runs the whole preflight itself before touching anything,
+so the check and the force-delete cannot drift apart. It validates the slug,
+refuses a branch name that already exists, creates `feature/<slug>` off the
+resolved base, and deletes the old branch — which the preflight has just
+proved is fully landed.
 
 ### 4. Catch the worktree's runtime up to the new base
 

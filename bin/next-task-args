@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+#
+# next-task-args — parse /next-task's argument string into shell-quoted
+# KEY=value lines, the same shape `wtconf --agent` emits.
+#
+# The raw string arrives on STDIN, never as argv. Claude Code splices the
+# user's text into the slash command verbatim BEFORE any shell parses it, so a
+# prose description like "corrigir o 500 (criar & guardar)" is a syntax error
+# at best and executes `backticks`, $(...), ; and > at worst. The caller's job
+# is to get those bytes here inert, inside a quoted heredoc; this script's job
+# is to never re-expand them.
+#
+# Emits: FRESH, FRESH_DB, SLUG, VIA, DESC.
+#
+# Usage:
+#   eval "$(next-task-args <<'EOF'
+#   <raw argument string>
+#   EOF
+#   )"
+#
+set -euo pipefail
+
+HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+WTCONF="$HERE/wtconf"; [ -x "$WTCONF" ] || WTCONF="wtconf"
+
+case "${1:-}" in
+  -h|--help) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+  "") : ;;
+  *) echo "next-task-args: unexpected argument '$1' — the input goes on stdin." >&2; exit 2 ;;
+esac
+
+# The routing allowlist. A bare /skill shorthand may resolve ONLY to a name the
+# project listed. Empty (the default) means the shorthand never routes, so an
+# unconfigured repo cannot fire a command that does not exist.
+TASK_ENTRY_SKILLS=$("$WTCONF" TASK_ENTRY_SKILLS 2>/dev/null || echo "")
+VIA_OK=" $TASK_ENTRY_SKILLS "
+
+ARGS=$(cat)
+
+FRESH=no; FRESH_DB=no; SLUG=""; VIA=""; DESC=""
+set -f   # no globbing: "/opt/*" in a description must stay literal
+
+# Pre-scan for an explicit via= FIRST, so the shorthand's "no explicit via= was
+# given" rule holds regardless of token order. VIA_SEEN is tracked separately
+# from the value: a bare "via=" must still suppress the shorthand, or an empty
+# value would read as "no via= given".
+VIA_SEEN=no; VIA_EXPLICIT=""
+for tok in $ARGS; do
+  case "$tok" in via=*) VIA_SEEN=yes; VIA_EXPLICIT="${tok#via=}"; VIA_EXPLICIT="${VIA_EXPLICIT#/}" ;; esac
+done
+
+for tok in $ARGS; do
+  case "$tok" in
+    --fresh) FRESH=yes ;;
+    --fresh-db) FRESH_DB=yes ;;
+    slug=*) SLUG="${tok#slug=}" ;;
+    via=*) ;;                          # already captured by the pre-scan
+    /*) _c="${tok#/}"; _ok=no
+        case "$_c" in
+          *[!a-z0-9-]*) ;;             # defense in depth: bare skill names only
+          *) case "$VIA_OK" in
+               *" $_c "*) [ -z "$DESC" ] && [ "$VIA_SEEN" = no ] && _ok=yes ;;
+             esac ;;
+        esac
+        if [ "$_ok" = yes ]; then VIA="$_c"; else DESC="$DESC $tok"; fi ;;
+    *) DESC="$DESC $tok" ;;
+  esac
+done
+[ -n "$VIA_EXPLICIT" ] && VIA="$VIA_EXPLICIT"   # explicit always wins
+set +f
+DESC="${DESC# }"
+
+# %q, so a description full of quotes and parentheses survives the caller's
+# eval as one inert string.
+for k in FRESH FRESH_DB SLUG VIA DESC; do printf '%s=%q\n' "$k" "${!k}"; done

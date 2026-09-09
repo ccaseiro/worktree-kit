@@ -56,34 +56,17 @@ because that skill re-reads and merges the base at its own start — valid
 precisely when only one ship runs at a time.
 
 ```bash
-# Pass --steal ONLY on this initial attempt, and only when the user asked for
-# it. Fail closed: --steal drives a destructive rm -rf, so any UNRECOGNIZED
-# token disarms it — "/ship-land don't --steal" must never reach it.
-# Capture the raw argument string ONCE, into a quoted heredoc. Claude Code
-# splices the user's text in verbatim BEFORE the shell parses it, so a prose
-# description like "corrigir o 500 (criar & guardar)" would otherwise be read
-# as shell: the parentheses are a syntax error, and `backticks`, $(...), ; and
-# > would RUN. A quoted delimiter makes every byte inert text.
-ARGS=$(cat <<'GSTACK_EOF'
+# The heredoc stays HERE because $ARGUMENTS is spliced in by Claude Code before
+# any shell sees it — the quoted delimiter is what makes those bytes inert text
+# rather than shell. ship-land-args reads them on stdin, never re-expands them,
+# and fails CLOSED: any token it does not recognise disarms --steal, because
+# --steal drives an rm -rf on another session's lock.
+eval "$(ship-land-args <<'GSTACK_EOF'
 $ARGUMENTS
 GSTACK_EOF
-)
-# zsh does not word-split unquoted parameters and bash does; the tool shell is
-# not guaranteed to be either, so ask for the same behaviour explicitly.
-[ -n "${ZSH_VERSION:-}" ] && setopt shwordsplit
-STEAL=""; WANT=no; UNKNOWN=no
-set -f
-for tok in $ARGS; do
-  case "$tok" in
-    --steal|steal) WANT=yes ;;
-    skip-tests|full-tests|no-merge|pr-only) : ;;
-    *) UNKNOWN=yes ;;
-  esac
-done
-set +f
-if [ "$WANT" = yes ] && [ "$UNKNOWN" = yes ]; then
-  echo "--steal IGNORED: unrecognized token(s) present — pass it alone to steal."
-elif [ "$WANT" = yes ]; then STEAL="--steal"; fi
+)"                # -> STEAL, SKIP_TESTS, FULL_TESTS, NO_MERGE, UNKNOWN_TOKENS, NOTE
+
+[ -n "$NOTE" ] && echo "$NOTE"
 ship-lock acquire $STEAL
 ```
 
@@ -151,39 +134,17 @@ disables the suite ahead of an auto-merge, so an exact token match is the whole
 gate.
 
 ```bash
-# Capture the raw argument string ONCE, into a quoted heredoc. Claude Code
-# splices the user's text in verbatim BEFORE the shell parses it, so a prose
-# description like "corrigir o 500 (criar & guardar)" would otherwise be read
-# as shell: the parentheses are a syntax error, and `backticks`, $(...), ; and
-# > would RUN. A quoted delimiter makes every byte inert text.
-ARGS=$(cat <<'GSTACK_EOF'
+# Same parser as step 1, so the two cannot drift on what a token means. It
+# already disarmed skip-tests if anything unrecognised was present: a stray
+# word next to a destructive flag is likelier a negation ("don't skip-tests")
+# than noise, and word splitting cannot tell them apart.
+eval "$(ship-land-args <<'GSTACK_EOF'
 $ARGUMENTS
 GSTACK_EOF
-)
-# zsh does not word-split unquoted parameters and bash does; the tool shell is
-# not guaranteed to be either, so ask for the same behaviour explicitly.
-[ -n "${ZSH_VERSION:-}" ] && setopt shwordsplit
-WANT_SKIP=no; WANT_FULL=no; NO_MERGE=no; UNKNOWN=no
-set -f
-for tok in $ARGS; do
-  case "$tok" in
-    skip-tests) WANT_SKIP=yes ;;
-    full-tests) WANT_FULL=yes ;;
-    no-merge|pr-only) NO_MERGE=yes ;;
-    --steal|steal) : ;;                 # consumed by step 1; recognized so it
-                                        # never counts as UNKNOWN here
-    *) echo "  unrecognized argument: $tok"; UNKNOWN=yes ;;
-  esac
-done
-# A stray word next to a destructive flag is likelier a negation ("don't
-# skip-tests") than noise, and word splitting cannot tell them apart. Refuse
-# the skip rather than guess.
-if [ "$UNKNOWN" = yes ] && [ "$WANT_SKIP" = yes ]; then
-  echo "  skip-tests IGNORED: unrecognized tokens present — pass it alone to skip"
-  WANT_SKIP=no
-fi
-set +f
-echo "ARGS: skip=$WANT_SKIP full=$WANT_FULL no_merge=$NO_MERGE"
+)"
+[ -n "$UNKNOWN_TOKENS" ] && echo "  unrecognized: $UNKNOWN_TOKENS"
+[ -n "$NOTE" ] && echo "$NOTE"
+echo "ARGS: skip=$SKIP_TESTS full=$FULL_TESTS no_merge=$NO_MERGE"
 ship-classify
 ```
 

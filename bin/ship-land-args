@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+#
+# ship-land-args — parse /ship-land's argument string into shell-quoted
+# KEY=value lines. Reads the raw string on STDIN, never argv.
+#
+# Emits: STEAL (--steal or empty), SKIP_TESTS, FULL_TESTS, NO_MERGE,
+#        UNKNOWN_TOKENS (what it did not recognise), NOTE (what it disarmed).
+#
+# --steal drives `rm -rf` on another session's lock, so this fails CLOSED: any
+# token it does not recognise disarms the steal entirely. "/ship-land don't
+# --steal" must never reach the destructive path, and neither must a typo. The
+# user is told the steal was ignored rather than silently getting one.
+#
+# Usage:
+#   eval "$(ship-land-args <<'EOF'
+#   <raw argument string>
+#   EOF
+#   )"
+#
+set -euo pipefail
+
+case "${1:-}" in
+  -h|--help) sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+  "") : ;;
+  *) echo "ship-land-args: unexpected argument '$1' — the input goes on stdin." >&2; exit 2 ;;
+esac
+
+ARGS=$(cat)
+
+STEAL=""; SKIP_TESTS=no; FULL_TESTS=no; NO_MERGE=no
+WANT_STEAL=no; UNKNOWN=no; NOTE=""; UNKNOWN_TOKENS=""
+set -f
+for tok in $ARGS; do
+  case "$tok" in
+    --steal|steal) WANT_STEAL=yes ;;
+    skip-tests)    SKIP_TESTS=yes ;;
+    full-tests)    FULL_TESTS=yes ;;
+    no-merge|pr-only) NO_MERGE=yes ;;
+    *) UNKNOWN=yes; UNKNOWN_TOKENS="$UNKNOWN_TOKENS $tok" ;;
+  esac
+done
+set +f
+
+if [ "$WANT_STEAL" = yes ] && [ "$UNKNOWN" = yes ]; then
+  NOTE="--steal IGNORED: unrecognized token(s) present — pass it alone to steal."
+elif [ "$WANT_STEAL" = yes ]; then
+  STEAL="--steal"
+fi
+
+# A stray word next to a destructive flag is likelier a negation ("don't
+# skip-tests") than noise, and word splitting cannot tell them apart. Refuse
+# the skip rather than guess.
+if [ "$SKIP_TESTS" = yes ] && [ "$UNKNOWN" = yes ]; then
+  SKIP_TESTS=no
+  NOTE="${NOTE:+$NOTE }skip-tests IGNORED: unrecognized token(s) present — pass it alone to skip."
+fi
+
+UNKNOWN_TOKENS="${UNKNOWN_TOKENS# }"
+for k in STEAL SKIP_TESTS FULL_TESTS NO_MERGE UNKNOWN_TOKENS NOTE; do printf '%s=%q\n' "$k" "${!k}"; done

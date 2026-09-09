@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+#
+# next-task-reset <slug> — reset this worktree onto a fresh branch off the base.
+#
+# Re-runs the whole preflight itself rather than trusting that a caller did.
+# The check and the `git branch -D` belong in one step: any gap between them is
+# a gap a caller can skip, and the thing on the other side of it is the
+# force-delete of a branch you are standing on.
+#
+# Usage:  next-task-reset <slug> [--prefix <p>]     (default prefix: feature)
+#
+set -euo pipefail
+
+WTKIT_LIB="${WTKIT_LIB:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib/wtkit" 2>/dev/null && pwd)}"
+if [ ! -f "${WTKIT_LIB:-}/common.sh" ]; then
+  echo "wtkit library not found (looked in '${WTKIT_LIB:-?}'). Set WTKIT_LIB." >&2
+  exit 1
+fi
+# shellcheck disable=SC1091
+. "$WTKIT_LIB/common.sh"
+
+HERE_BIN=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+PREFLIGHT="$HERE_BIN/next-task-preflight"; [ -x "$PREFLIGHT" ] || PREFLIGHT="next-task-preflight"
+
+SLUG=""; PREFIX="feature"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --prefix) PREFIX="${2:?--prefix needs a value}"; shift 2 ;;
+    -h|--help) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -*) echo "next-task-reset: unknown option: $1" >&2; exit 2 ;;
+    *) if [ -z "$SLUG" ]; then SLUG="$1"; shift; else echo "next-task-reset: unexpected argument: $1" >&2; exit 2; fi ;;
+  esac
+done
+
+[ -n "$SLUG" ] || { echo "Usage: next-task-reset <slug>" >&2; exit 2; }
+# Kebab-case, so the slug is safe as a branch segment, a docker project name
+# and a postgres identifier — the same rule new-task enforces.
+printf '%s' "$SLUG" | grep -qE '^[a-z0-9]+(-[a-z0-9]+)*$' || {
+  echo "Slug must be kebab-case (lowercase letters, digits, single dashes): '$SLUG'" >&2
+  exit 2
+}
+
+"$PREFLIGHT" --quiet || exit 1
+
+MAIN_ROOT=$(wtkit_main_root)
+wtkit_load_conf "$MAIN_ROOT"
+OLD_BR=$(git branch --show-current)
+NEW_BR="$PREFIX/$SLUG"
+
+if git show-ref --verify --quiet "refs/heads/$NEW_BR"; then
+  echo "Branch '$NEW_BR' already exists — pick another slug." >&2
+  exit 2
+fi
+
+echo "==> $OLD_BR -> $NEW_BR (off $DEFAULT_BASE)"
+git switch -c "$NEW_BR" "$DEFAULT_BASE"
+# The preflight proved the old branch is fully landed, so -D discards nothing.
+git branch -D "$OLD_BR" 2>/dev/null || true
+git branch --show-current

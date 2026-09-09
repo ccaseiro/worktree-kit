@@ -25,7 +25,8 @@ LIB="$PREFIX/lib/wtkit"
 CMDDIR="${CLAUDE_COMMANDS_DIR:-$HOME/.claude/commands}"
 
 CMDS=(new-workspace new-task start-worktree remove-workspace
-      wtconf ship-lock ship-classify land-local)
+      wtconf ship-lock ship-classify land-local
+      next-task-args next-task-preflight next-task-reset ship-land-args)
 SLASH=(next-task.md ship-land.md open-worktree.md)
 
 WANT_COMMANDS=1

@@ -176,6 +176,26 @@ command that is not there.
 The lock and the classifier have no such dependency — they are useful under any
 ship workflow, including a hand-rolled one.
 
+### The commands are thin wrappers
+
+`/next-task` and `/ship-land` used to carry their argument parsing and their
+safety guards as shell embedded in markdown. That shell could not be tested,
+and it was re-read and re-interpreted on every invocation — for logic that
+decides whether a `git branch -D` runs, and whether `--steal` reaches an
+`rm -rf`. Both now call scripts:
+
+| Script | What it owns |
+|---|---|
+| `next-task-args` | parses `/next-task`'s argument string (stdin, never argv) |
+| `next-task-preflight` | the four stop conditions before a worktree is reset |
+| `next-task-reset` | the reset itself — re-runs the preflight before acting |
+| `ship-land-args` | parses `/ship-land`'s arguments, fail-closed around `--steal` |
+
+The heredoc that captures `$ARGUMENTS` stays in the markdown, because Claude
+Code splices the user's text in before any shell sees it and a quoted delimiter
+is what makes those bytes inert. Everything after that is a script, and
+`make test` covers it.
+
 ## Flags
 
 ```

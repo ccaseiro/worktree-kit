@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+#
+# next-task-preflight — is this worktree safe to reset onto a fresh branch?
+#
+# /next-task's step 3 runs `git branch -D` on the branch you are standing on.
+# Everything that decides whether that is safe lives here, in one place that a
+# test can run, rather than as prose bullets a model re-reads each time.
+#
+# Prints a report, then exits:
+#   0  safe to reset
+#   1  a stop condition applies (the reason is on stderr)
+#   2  usage error
+#
+# Usage:  next-task-preflight [--quiet]
+#
+set -euo pipefail
+
+WTKIT_LIB="${WTKIT_LIB:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib/wtkit" 2>/dev/null && pwd)}"
+if [ ! -f "${WTKIT_LIB:-}/common.sh" ]; then
+  echo "wtkit library not found (looked in '${WTKIT_LIB:-?}'). Set WTKIT_LIB." >&2
+  exit 1
+fi
+# shellcheck disable=SC1091
+. "$WTKIT_LIB/common.sh"
+
+QUIET=0
+case "${1:-}" in
+  --quiet) QUIET=1 ;;
+  -h|--help) sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+  "") : ;;
+  *) echo "next-task-preflight: unknown argument: $1" >&2; exit 2 ;;
+esac
+
+MAIN_ROOT=$(wtkit_main_root)
+wtkit_load_conf "$MAIN_ROOT"
+
+HERE=$(git rev-parse --show-toplevel)
+OLD_BR=$(git branch --show-current 2>/dev/null || echo "")
+DIRTY=$(git status --porcelain | wc -l | tr -d ' ')
+
+# Freshness matters: the count below decides whether this branch gets reset
+# away, and a stale base makes that number wrong without looking wrong.
+wtkit_fetch_base_ref "$HERE" "$DEFAULT_BASE"
+
+# No `|| echo 0`. A base that will not resolve means "cannot tell", and
+# reporting that as zero is exactly what waved real unlanded commits through.
+UNSHIPPED=""
+if git rev-parse --verify --quiet "$DEFAULT_BASE" >/dev/null 2>&1; then
+  UNSHIPPED=$(git rev-list --count "$DEFAULT_BASE..HEAD") || UNSHIPPED=""
+fi
+
+if [ "$QUIET" -eq 0 ]; then
+  echo "Worktree: $HERE"
+  echo "Base:     $DEFAULT_BASE"
+  echo "Branch:   ${OLD_BR:-<detached>} | dirty: $DIRTY | unshipped: ${UNSHIPPED:-UNKNOWN}"
+  echo "Entry:    ${TASK_ENTRY_SKILLS:-(none configured)}"
+fi
+
+stop() { echo "" >&2; echo "$@" >&2; exit 1; }
+
+[ "$HERE" != "$MAIN_ROOT" ] || \
+  stop "Run this from inside a task worktree, not the main checkout."
+
+[ -n "$OLD_BR" ] || \
+  stop "Detached HEAD — check out a branch before resetting."
+
+if [ "$DIRTY" -gt 0 ]; then
+  git status --short | head -10 | sed 's/^/    /' >&2
+  stop "You have $DIRTY uncommitted change(s). Commit, stash, or discard them first."
+fi
+
+[ -n "$UNSHIPPED" ] || \
+  stop "Cannot resolve the base '$DEFAULT_BASE', so whether this branch has landed
+is UNKNOWN — and the reset force-deletes it. Point the base at a branch that
+exists: git config wtkit.baseBranch <branch>"
+
+if [ "$UNSHIPPED" -gt 0 ]; then
+  git log --oneline --no-decorate "$DEFAULT_BASE..HEAD" | head -10 | sed 's/^/    /' >&2
+  if witness=$(wtkit_landing_witness "$HERE" HEAD 2>/dev/null); then
+    echo "  (they ARE contained in $witness, so this may already have landed" >&2
+    echo "   by another route)" >&2
+  fi
+  stop "This branch has $UNSHIPPED commit(s) not on $DEFAULT_BASE. Land it first
+(land-local, or /ship-land) or you will lose them."
+fi
+
+[ "$QUIET" -eq 0 ] && echo "OK: safe to reset."
+exit 0
