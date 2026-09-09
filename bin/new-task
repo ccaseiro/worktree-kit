@@ -117,10 +117,15 @@ if [ "$USE_DOCKER" -eq 1 ]; then
 fi
 
 # ---- create the worktree ---------------------------------------------------
-echo "==> Fetching $BASE and creating worktree"
-case "$BASE" in
-  origin/*) git -C "$MAIN_ROOT" fetch origin "${BASE#origin/}" >/dev/null 2>&1 || true ;;
-esac
+# Only claim a fetch when one actually happens: a local integration branch
+# has nothing upstream, and announcing a fetch that never ran is how you
+# end up trusting a freshness that was never there.
+if [ "$BASE" = "$DEFAULT_BASE" ] && [ "$DEFAULT_BASE_ON_REMOTE" -eq 0 ]; then
+  echo "==> Creating worktree from local $BASE"
+else
+  echo "==> Fetching $BASE and creating worktree"
+fi
+wtkit_fetch_base_ref "$MAIN_ROOT" "$BASE"
 git -C "$MAIN_ROOT" worktree add "$WT_DIR" -b "$BRANCH" "$BASE"
 
 [ "$USE_DOCKER" -eq 1 ] && [ "$NO_DOCKER" -eq 0 ] && STACK_UP=1

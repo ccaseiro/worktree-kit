@@ -182,10 +182,34 @@ wtkit_assert_base_agrees() {
   return 1
 }
 
+
+# wtkit_fetch_base_ref <root> <ref>
+#   Refresh <ref> from the remote when there is a remote copy to refresh from.
+#   Silence is wrong in both directions here. Fetching a branch that was never
+#   pushed fails noisily for no reason — that is the local integration branch
+#   several worktrees fan into, and it is the normal case, not an error. And
+#   swallowing a REAL failure leaves every later count measured against a stale
+#   ref with nothing said, which is how a teardown guard ends up confidently
+#   wrong about whether your work has landed.
+#
+#   Never fatal: a stale base is usable, the caller just has to know it is stale.
+wtkit_fetch_base_ref() {
+  local root="${1:-.}" ref="${2:-}" rem="${WTKIT_REMOTE:-origin}" branch
+  case "$ref" in
+    "$rem"/*) branch="${ref#"$rem"/}" ;;
+    *) return 0 ;;   # a local branch: there is nothing upstream to fetch
+  esac
+  if ! git -C "$root" fetch "$rem" "$branch" >/dev/null 2>&1; then
+    echo "!! could not fetch $rem/$branch — continuing from the local copy," >&2
+    echo "!! which may be behind. Counts against it may be wrong." >&2
+  fi
+  return 0
+}
+
 # ---- config -----------------------------------------------------------------
 # Sets REPO, PROJECT_SLUG, USE_DOCKER, the four port bases, INHERIT_ENV_KEYS,
-# WORKSPACE_INITIAL_PROMPT_FMT, FINISH_HINT, DEFAULT_BASE, DEFAULT_BASE_BRANCH,
-# DEFAULT_BASE_ON_REMOTE — and sources the repo conf, which may override any of
+# WORKSPACE_INITIAL_PROMPT_FMT, FINISH_HINT, WTKIT_REMOTE, DEFAULT_BASE,
+# DEFAULT_BASE_BRANCH, DEFAULT_BASE_ON_REMOTE — and sources the repo conf, which may override any of
 # them and define the write_env / post_up hooks.
 wtkit_load_conf() {
   MAIN_ROOT="$1"

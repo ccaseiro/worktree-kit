@@ -74,9 +74,10 @@ DIRTY=$(git -C "$WT_DIR" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
 # counter, so it dropped its DISCARD warning too, and `git branch -D` then
 # force-deleted past git's own not-fully-merged check. Three layers of safety,
 # all defeated by one masked exit code.
-if [ "${DEFAULT_BASE_ON_REMOTE:-0}" -eq 1 ]; then
-  git -C "$MAIN_ROOT" fetch origin "$DEFAULT_BASE_BRANCH" >/dev/null 2>&1 || true
-fi
+# Freshness is load-bearing here: this count decides whether a branch gets
+# force-deleted. A swallowed fetch failure would measure against a stale ref
+# and say nothing about it.
+wtkit_fetch_base_ref "$MAIN_ROOT" "$DEFAULT_BASE"
 UNSHIPPED=""
 if git -C "$WT_DIR" rev-parse --verify --quiet "$DEFAULT_BASE" >/dev/null 2>&1; then
   UNSHIPPED=$(git -C "$WT_DIR" rev-list --count "$DEFAULT_BASE..HEAD") || UNSHIPPED=""

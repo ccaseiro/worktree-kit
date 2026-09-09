@@ -250,14 +250,16 @@ cannot `git checkout` it from here.
 - If `BASE_ON_REMOTE` is **0**, skip this whole step: the base never left this
   machine, so there is no remote merge commit to pick up and nothing to
   fast-forward from. Say so in the report rather than failing.
-- `git fetch origin "$BASE_BRANCH"` to pick up the merge commit.
+- `git fetch "$REMOTE_NAME" "$BASE_BRANCH"` to pick up the merge commit. If that
+  fetch fails, stop here and say so rather than fast-forwarding onto a ref
+  that was never refreshed.
 - Find the working tree holding it: `git worktree list --porcelain`, the entry
   whose `branch` is `refs/heads/$BASE_BRANCH`.
 - If found: `git -C <that-path> merge --ff-only "$BASE_REF"`. Safe — the merge
   commit is a strict descendant, so it can only fast-forward. If it fails (the
   base tree has diverged or has local commits), do NOT force it: report that it
   needs a manual `git pull` and continue.
-- If the base is not checked out anywhere: `git fetch origin "$BASE_BRANCH:$BASE_BRANCH"`.
+- If the base is not checked out anywhere: `git fetch "$REMOTE_NAME" "$BASE_BRANCH:$BASE_BRANCH"`.
 - Leave untracked and ignored files in the base tree untouched.
 
 ### 6. Release the lock, then report

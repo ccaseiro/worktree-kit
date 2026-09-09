@@ -45,7 +45,7 @@ then either routes to the `via=` skill or presents the entry-point choice.
 ### 1. Read the project config, parse the flags, refuse if unsafe
 
 ```bash
-eval "$(wtconf --agent)"   # BASE_REF, BASE_BRANCH, BASE_ON_REMOTE, TASK_ENTRY_SKILLS, …
+eval "$(wtconf --agent)"   # REMOTE_NAME, BASE_REF, BASE_BRANCH, BASE_ON_REMOTE, TASK_ENTRY_SKILLS, …
 
 # The bare-/skill shorthand may route ONLY to a name the project listed in
 # TASK_ENTRY_SKILLS. Empty (the default) means the shorthand never routes, so
@@ -106,7 +106,12 @@ OLD_BR=$(git branch --show-current)
 DIRTY=$(git status --porcelain | wc -l | tr -d ' ')
 # Fetch only a base that is actually on the remote. An integration branch that
 # several worktrees fan into may never have been pushed, and fetching it fails.
-if [ "$BASE_ON_REMOTE" = 1 ]; then git fetch origin "$BASE_BRANCH" 2>&1 | tail -1; fi
+# Say so when the fetch fails: UNSHIPPED below decides whether this branch gets
+# reset away, and a stale base makes that number wrong without looking wrong.
+if [ "$BASE_ON_REMOTE" = 1 ]; then
+  git fetch "$REMOTE_NAME" "$BASE_BRANCH" 2>&1 | tail -1 \
+    || echo "!! fetch of $REMOTE_NAME/$BASE_BRANCH failed — the count below is against a possibly stale base"
+fi
 # No `|| echo 0` here. A base that will not resolve means "cannot tell", and
 # reporting that as zero is exactly what waved real unlanded commits through.
 UNSHIPPED=$(git rev-list --count "$BASE_REF..HEAD") || UNSHIPPED=""
