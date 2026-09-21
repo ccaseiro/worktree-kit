@@ -45,6 +45,33 @@ is migrated or just left where it is, since the launchers would stop finding it.
 **Priority:** P3
 **Depends on:** None
 
+### `remove-workspace --delete-remote` deletes on existence, not on evidence
+
+**What:** Route `remove-workspace`'s remote delete through
+`wtkit_delete_remote_branch` instead of its own `show-ref` + `push --delete`.
+
+**Why:** The two paths now disagree about what they check. The teardown guard
+proves the *local* branch has landed and then deletes the remote branch on the
+strength of a `refs/remotes/` entry existing — a ref that is only as fresh as
+the last fetch. `next-task-reset --delete-remote` fetches the remote branch,
+counts it against the base and pushes with a lease, so a commit that reached
+the remote by another route survives. `remove-workspace` should not be the
+weaker of the two, particularly since it is also the path that wipes the
+volumes and the worktree, i.e. the one you run when you are least likely to
+notice what went with it.
+
+**Context:** Written 2026-09-21 alongside the `DELETE_REMOTE_ON_RESET` work,
+and deliberately left out of it: the flag is explicit and pre-existing, and
+changing what an existing flag refuses to do is a behaviour change that wants
+its own decision. The helper already takes `<root> <branch> <base_ref>` and
+never fails its caller, so the change itself is small — the questions are
+whether `--force` should also force past an unlanded remote tip, and whether
+the teardown should refuse outright rather than warn.
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** None
+
 ### Warn once, not per process, when something is genuinely off
 
 **What:** Give the kit a way to say something once per user-facing command

@@ -7,7 +7,16 @@
 # a gap a caller can skip, and the thing on the other side of it is the
 # force-delete of a branch you are standing on.
 #
-# Usage:  next-task-reset <slug> [--prefix <p>]     (default prefix: feature)
+# Usage:  next-task-reset <slug> [--prefix <p>] [--delete-remote|--keep-remote]
+#
+#   --prefix <p>      branch prefix (default: feature)
+#   --delete-remote   also delete <remote>/<old-branch>, if it has landed
+#   --keep-remote     leave the remote branch alone
+#
+# Without either flag the repo conf decides: DELETE_REMOTE_ON_RESET=1 in
+# .claude/workspace.conf turns it on. Off by default — this kit's other remote
+# delete (remove-workspace --delete-remote) is opt-in too, and a repo whose
+# branches never leave the machine has nothing there to delete.
 #
 set -euo pipefail
 
@@ -22,11 +31,13 @@ fi
 HERE_BIN=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 PREFLIGHT="$HERE_BIN/next-task-preflight"; [ -x "$PREFLIGHT" ] || PREFLIGHT="next-task-preflight"
 
-SLUG=""; PREFIX="feature"
+SLUG=""; PREFIX="feature"; OPT_DELETE_REMOTE=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --prefix) PREFIX="${2:?--prefix needs a value}"; shift 2 ;;
-    -h|--help) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --delete-remote) OPT_DELETE_REMOTE=1; shift ;;
+    --keep-remote) OPT_DELETE_REMOTE=0; shift ;;
+    -h|--help) sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     -*) echo "next-task-reset: unknown option: $1" >&2; exit 2 ;;
     *) if [ -z "$SLUG" ]; then SLUG="$1"; shift; else echo "next-task-reset: unexpected argument: $1" >&2; exit 2; fi ;;
   esac
@@ -44,6 +55,8 @@ printf '%s' "$SLUG" | grep -qE '^[a-z0-9]+(-[a-z0-9]+)*$' || {
 
 MAIN_ROOT=$(wtkit_main_root)
 wtkit_load_conf "$MAIN_ROOT"
+# A flag on the command line beats the conf; the conf beats the default.
+: "${OPT_DELETE_REMOTE:=${DELETE_REMOTE_ON_RESET:-0}}"
 OLD_BR=$(git branch --show-current)
 NEW_BR="$PREFIX/$SLUG"
 
@@ -56,4 +69,11 @@ echo "==> $OLD_BR -> $NEW_BR (off $DEFAULT_BASE)"
 git switch -c "$NEW_BR" "$DEFAULT_BASE"
 # The preflight proved the old branch is fully landed, so -D discards nothing.
 git branch -D "$OLD_BR" 2>/dev/null || true
+
+# The remote branch is a separate ref and gets a separate proof — see
+# wtkit_delete_remote_branch. It runs last, and never fails the reset.
+if [ "$OPT_DELETE_REMOTE" = "1" ]; then
+  wtkit_delete_remote_branch "." "$OLD_BR" "$DEFAULT_BASE"
+fi
+
 git branch --show-current

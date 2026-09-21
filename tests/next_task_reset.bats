@@ -121,3 +121,79 @@ landed_ws() {
   run next-task-reset
   [ "$status" -eq 2 ]
 }
+
+# ---- the remote branch ------------------------------------------------------
+#
+# The preflight proves the LOCAL ref landed. Everything below is about a ref it
+# never looked at, which is why the remote delete carries its own proof.
+
+landed_and_pushed() {
+  landed_ws
+  git -C "$REPO" push -q origin workspace/1
+}
+
+remote_has_ws1() {
+  [ -n "$(git -C "$REPO" ls-remote --heads origin refs/heads/workspace/1)" ]
+}
+
+@test "the remote branch survives the reset by default" {
+  landed_and_pushed
+  run next-task-reset my-new-task
+  [ "$status" -eq 0 ]
+  remote_has_ws1
+}
+
+@test "the remote branch goes too when the conf asks for it" {
+  landed_and_pushed
+  wtk_conf 'DELETE_REMOTE_ON_RESET=1'
+  run next-task-reset my-new-task
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Deleting remote branch origin/workspace/1"* ]]
+  run remote_has_ws1
+  [ "$status" -ne 0 ]
+}
+
+@test "--delete-remote overrides a conf that did not ask" {
+  landed_and_pushed
+  run next-task-reset my-new-task --delete-remote
+  [ "$status" -eq 0 ]
+  run remote_has_ws1
+  [ "$status" -ne 0 ]
+}
+
+@test "--keep-remote overrides a conf that did ask" {
+  landed_and_pushed
+  wtk_conf 'DELETE_REMOTE_ON_RESET=1'
+  run next-task-reset my-new-task --keep-remote
+  [ "$status" -eq 0 ]
+  remote_has_ws1
+}
+
+@test "REGRESSION: a remote branch holding commits the local ref never had survives" {
+  # THE case the local guard cannot see. The branch you are standing on has
+  # landed, but someone pushed to the remote branch from somewhere this
+  # worktree never fetched — a review fix made in the web UI, another machine.
+  # Deleting it would lose that commit, and close its PR if one is open.
+  landed_and_pushed
+  git -C "$REPO" switch -q -c tmp/side workspace/1
+  git -C "$REPO" commit -q --allow-empty -m "fix pushed from the web UI"
+  git -C "$REPO" push -q -f origin tmp/side:refs/heads/workspace/1
+  git -C "$REPO" switch -q feat/something
+  git -C "$REPO" branch -D tmp/side >/dev/null
+
+  cd "$WS"
+  run next-task-reset my-new-task --delete-remote
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"leaving it alone"* ]]
+  remote_has_ws1
+  # ...and the reset itself still happened.
+  [ "$(git -C "$WS" branch --show-current)" = "feature/my-new-task" ]
+}
+
+@test "a branch that was never pushed is not an error" {
+  landed_ws
+  run next-task-reset my-new-task --delete-remote
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"already gone"* ]]
+  [ "$(git -C "$WS" branch --show-current)" = "feature/my-new-task" ]
+}

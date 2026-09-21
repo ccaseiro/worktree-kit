@@ -241,6 +241,62 @@ wtkit_landing_witness() {
   printf '%s' "$head"
 }
 
+# wtkit_delete_remote_branch <root> <branch> <base_ref>
+#   Delete <remote>/<branch>, but only after proving the REMOTE tip is
+#   contained in <base_ref>.
+#
+#   The local guard does not cover this. next-task-preflight counts
+#   `base..HEAD` and wtkit_fetch_base_ref refreshes only the base, so what it
+#   proves is that the branch you are STANDING ON has landed. The remote
+#   branch is a different ref, and it can carry commits this worktree never
+#   fetched: a review fix committed in the web UI, another machine, a
+#   colleague. Deleting the head branch of an OPEN pull request also closes
+#   that PR. So the remote ref gets its own fetch and its own ancestry check,
+#   and the push carries the tip it checked as a lease — a commit pushed in
+#   the seconds since is then a rejection instead of a loss.
+#
+#   Never fatal. Already gone, a failed fetch, an unlanded tip, a rejected
+#   push: each reports and returns 0. The caller has already moved the
+#   worktree onto its new branch, and a network hiccup must not turn that into
+#   a failed command.
+wtkit_delete_remote_branch() {
+  local root="${1:-.}" br="$2" base="$3" rem="${WTKIT_REMOTE:-origin}" sha ahead
+  [ -n "$br" ] && [ -n "$base" ] || return 0
+
+  # Exact-match the ref: ls-remote patterns are tail-matched, so a bare name
+  # can answer for a branch that merely ends the same way.
+  sha=$(git -C "$root" ls-remote --heads "$rem" "refs/heads/$br" 2>/dev/null \
+        | awk -v r="refs/heads/$br" '$2 == r { print $1; exit }')
+  if [ -z "$sha" ]; then
+    echo "    $rem/$br: already gone"
+    return 0
+  fi
+
+  if ! git -C "$root" fetch -q "$rem" "$br" >/dev/null 2>&1; then
+    echo "!! could not fetch $rem/$br — leaving the remote branch alone." >&2
+    return 0
+  fi
+
+  # Unknown is not zero, here for the same reason it is not zero in the
+  # preflight: the next line deletes something.
+  ahead=$(git -C "$root" rev-list --count "$base..$sha" 2>/dev/null) || ahead=""
+  if [ -z "$ahead" ]; then
+    echo "!! cannot tell whether $rem/$br has landed — leaving it alone." >&2
+    return 0
+  fi
+  if [ "$ahead" -gt 0 ]; then
+    echo "!! $rem/$br has $ahead commit(s) not on $base — leaving it alone." >&2
+    echo "!!   Pushed from somewhere this worktree never fetched, or its PR is" >&2
+    echo "!!   still open (deleting the branch would close it)." >&2
+    return 0
+  fi
+
+  echo "==> Deleting remote branch $rem/$br"
+  git -C "$root" push "$rem" --force-with-lease="refs/heads/$br:$sha" \
+      --delete "$br" 2>&1 | tail -2 \
+    || echo "!! could not delete $rem/$br — delete it by hand if you want it gone." >&2
+}
+
 # ---- config -----------------------------------------------------------------
 # Sets REPO, PROJECT_SLUG, USE_DOCKER, the four port bases, INHERIT_ENV_KEYS,
 # WORKSPACE_INITIAL_PROMPT_FMT, FINISH_HINT, WTKIT_REMOTE, DEFAULT_BASE,

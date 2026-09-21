@@ -199,6 +199,25 @@ Every one is optional, and every default fails safe.
 | `RESERVED_VERSION_SEGMENT` | *(none)* | `/ship-land` — a segment it must never land (hotfix lane) |
 | `TASK_ENTRY_SKILLS` | *(none)* | `/next-task` — the entry menu, and the only `/skill` shorthands it will route |
 | `REBUILD_TRIGGER_PATHS` | *(none)* | `/next-task` — paths whose change means rebuild, not just restart |
+| `DELETE_REMOTE_ON_RESET` | `0` | `/next-task` — also delete `<remote>/<old-branch>` on reset, once proven landed |
+
+**`DELETE_REMOTE_ON_RESET` deletes a second ref, so it proves a second thing.**
+The preflight counts `base..HEAD`: it establishes that the branch you are
+standing on has landed, and nothing about the remote branch of the same name,
+which can carry commits this worktree never fetched — a review fix committed in
+the web UI, a push from another machine. So the remote ref is fetched and
+checked on its own, and the delete carries the tip it checked as a lease. It
+fails closed on the branch and open on the command: unlanded, unfetchable,
+already gone or rejected all print a line and leave the branch standing, and
+none of them fails the reset that has already happened. `next-task-reset --delete-remote` / `--keep-remote` override the key for
+one run.
+
+Enabling it is not the same as the forge deleting merged branches for you
+(GitHub's *Automatically delete head branches*). That fires at merge and covers
+every route in — a PR merged in the browser, `/ship-land no-merge`, a worktree
+torn down with `remove-workspace` instead of reused. This key covers the
+`/ship-land` → `/next-task` loop only. They compose: with the forge setting on,
+the branch is already gone and this reports exactly that.
 
 ### Does this need gstack?
 

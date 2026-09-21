@@ -168,7 +168,9 @@ with the task. Finish with `/ship-land`.
   latest base.
 - Keeps the same worktree directory and stack (ports unchanged); `--fresh-db`
   recreates the database, otherwise `start-worktree` just converges it.
-- Deletes the previous (already-merged) branch — safe because step 1 verified it
-  has no unshipped commits.
+- Deletes the previous (already-merged) **local** branch — safe because step 1
+  verified it has no unshipped commits. The branch on the remote is left alone
+  unless the conf sets `DELETE_REMOTE_ON_RESET=1`, and even then only after the
+  remote ref is separately fetched and proven landed.
 - **Never auto-dives into implementation.** After prepping it routes to `via=`,
   or presents the choice and waits.
