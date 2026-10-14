@@ -258,7 +258,7 @@ is what makes those bytes inert. Everything after that is a script, and
 
 ```
 new-workspace <n> ["first task"]   --no-docker --no-launch --tmux --no-rc --base <ref>
-new-task <slug> ["prompt"]         --no-docker --no-launch --tmux --base <ref> --prefix <p>
+new-task <slug> ["prompt"]         --no-docker --no-launch --base <ref> --prefix <p>
 start-worktree [name|path]         --rebuild --no-post-up --no-docker
 remove-workspace <n>               --force --yes --tmux --delete-remote
 
@@ -267,9 +267,10 @@ ship-lock acquire [--steal] | status | release --token <t>
 ship-classify [--base <ref>]
 ```
 
-Both launchers hand the **current pane** to Claude by default; `--tmux` opens
-a new window instead. `--no-rc` skips Remote Control, which needs a claude.ai
-login rather than an API key.
+Both launchers hand the **current pane** to Claude; `new-workspace --tmux`
+opens a new window instead (`new-task` always uses the current pane).
+`--no-rc` skips Remote Control, which needs a claude.ai login rather than an
+API key.
 
 `--base` defaults to `origin/<BASE_BRANCH>` when the conf sets one, else to the
 remote's own default branch (`origin/HEAD`), else to `origin/main`. Setting
