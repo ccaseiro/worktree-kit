@@ -58,7 +58,7 @@ BASE_BRANCH="$DEFAULT_BASE_BRANCH"      # its bare name
 BASE_ON_REMOTE="$DEFAULT_BASE_ON_REMOTE"
 : "${MERGE_METHOD:=--merge}"            # gh pr merge flag: --merge|--squash|--rebase
 : "${INERT_PATHS:=}"                    # globs the test suite cannot observe
-: "${SHIP_SKILL:=/ship}"                # the skill /ship-land runs; empty = none
+: "${SHIP_SKILL=/ship}"                 # the skill /ship-land runs; empty = none (= not :=)
 : "${TASK_ENTRY_SKILLS:=}"              # /next-task's entry-point menu
 : "${VERSION_BUMP_FLOOR:=}"             # lowest segment a normal ship may bump
 : "${RESERVED_VERSION_SEGMENT:=}"       # segment reserved for out-of-band hotfixes

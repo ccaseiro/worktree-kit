@@ -66,3 +66,16 @@ agent() { ( cd "${1:-$REPO}" && wtconf --agent 2>/dev/null ); }
   run bash -c "cd '$REPO' && wtconf BASE_REF 2>/dev/null"
   [ "$output" = "origin/develop" ]
 }
+
+@test "an empty SHIP_SKILL stays empty instead of reverting to /ship" {
+  # Empty means "no ship skill" and makes /ship-land stop (README). Defaulting
+  # with := would turn an explicit "" back into /ship.
+  wtk_conf 'SHIP_SKILL=""'
+  run agent
+  [[ "$output" == *"SHIP_SKILL=''"* ]]
+}
+
+@test "an unset SHIP_SKILL still defaults to /ship" {
+  run agent
+  [[ "$output" == *"SHIP_SKILL=/ship"* ]]
+}
