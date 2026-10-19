@@ -246,17 +246,19 @@ wtkit_landing_witness() {
 #
 #   A squash merge writes a new commit, so <tip> never becomes an ancestor of
 #   <base>, and every `base..tip` count stays above zero after a clean landing.
-#   This builds the commit a squash of <tip> would make on its fork point and
-#   asks `git cherry` whether <base> already holds an equivalent patch. A squash
-#   edited or conflict-resolved on the way in does not match and reads as
+#   This merges <tip> into <base> in memory and calls it landed only when the
+#   result is byte-for-byte <base>'s own tree. Patch-id matching (`git cherry`)
+#   is not enough: it ignores whitespace, so it called a later reindent landed.
+#   A branch with no net change reads as unlanded, so empty commits still count
+#   as work. Needs git 2.38+ for `merge-tree --write-tree`; older git reads as
 #   unlanded, which is the safe direction.
 wtkit_squash_landed() {
-  local root="${1:-.}" base="$2" tip="${3:-HEAD}" mb synth
+  local root="${1:-.}" base="$2" tip="${3:-HEAD}" mb merged
   [ -n "$base" ] || return 1
   mb=$(git -C "$root" merge-base "$base" "$tip" 2>/dev/null) || return 1
-  synth=$(git -C "$root" -c user.name=wtkit -c user.email=wtkit@localhost \
-          commit-tree "$tip^{tree}" -p "$mb" -m squash-probe 2>/dev/null) || return 1
-  git -C "$root" cherry "$base" "$synth" 2>/dev/null | grep -q '^-'
+  [ "$(git -C "$root" rev-parse "$mb^{tree}")" != "$(git -C "$root" rev-parse "$tip^{tree}")" ] || return 1
+  merged=$(git -C "$root" merge-tree --write-tree "$base" "$tip" 2>/dev/null) || return 1
+  [ "$merged" = "$(git -C "$root" rev-parse "$base^{tree}")" ]
 }
 
 # wtkit_delete_remote_branch <root> <branch> <base_ref>

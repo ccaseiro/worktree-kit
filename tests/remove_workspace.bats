@@ -178,3 +178,14 @@ squash_fixture() {
   [[ "$output" == *"has 2 commit(s) not on feat/something"* ]]
   wtk_has_branch workspace/1
 }
+
+@test "REGRESSION: a whitespace-only commit after the squash is not landed" {
+  # git cherry matches on patch-id, which ignores whitespace, so this commit
+  # once read as landed and branch -D deleted it.
+  squash_fixture
+  _git -C "$REPO" commit -qm "squash ws/1"
+  echo "  a" > "$WS/a.txt"; _git -C "$WS" commit -qam "agent 1 indent a"
+  run remove-workspace 1 --yes
+  [ "$status" -eq 1 ]
+  wtk_has_branch workspace/1
+}
