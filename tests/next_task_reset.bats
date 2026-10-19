@@ -197,3 +197,14 @@ remote_has_ws1() {
   [[ "$output" == *"already gone"* ]]
   [ "$(git -C "$WS" branch --show-current)" = "feature/my-new-task" ]
 }
+
+@test "preflight passes on a squash-landed worktree" {
+  wtk_mk_workspace 1 feat/something 0
+  echo a > "$WS/a.txt"; _git -C "$WS" add a.txt; _git -C "$WS" commit -qm "agent 1 a"
+  _git -C "$REPO" merge -q --squash workspace/1
+  _git -C "$REPO" commit -qm "squash ws/1"
+  cd "$WS"
+  run next-task-preflight
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"safe to reset"* ]]
+}

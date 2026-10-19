@@ -48,11 +48,17 @@ UNSHIPPED=""
 if git rev-parse --verify --quiet "$DEFAULT_BASE" >/dev/null 2>&1; then
   UNSHIPPED=$(git rev-list --count "$DEFAULT_BASE..HEAD") || UNSHIPPED=""
 fi
+SQUASHED=""
+if [ -n "$UNSHIPPED" ] && [ "$UNSHIPPED" -gt 0 ] && \
+   wtkit_squash_landed . "$DEFAULT_BASE" HEAD; then
+  SQUASHED="$UNSHIPPED"
+  UNSHIPPED=0
+fi
 
 if [ "$QUIET" -eq 0 ]; then
   echo "Worktree: $HERE"
   echo "Base:     $DEFAULT_BASE"
-  echo "Branch:   ${OLD_BR:-<detached>} | dirty: $DIRTY | unshipped: ${UNSHIPPED:-UNKNOWN}"
+  echo "Branch:   ${OLD_BR:-<detached>} | dirty: $DIRTY | unshipped: ${UNSHIPPED:-UNKNOWN}${SQUASHED:+ ($SQUASHED landed as a squash)}"
   echo "Entry:    ${TASK_ENTRY_SKILLS:-(none configured)}"
 fi
 

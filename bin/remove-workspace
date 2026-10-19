@@ -82,6 +82,12 @@ UNSHIPPED=""
 if git -C "$WT_DIR" rev-parse --verify --quiet "$DEFAULT_BASE" >/dev/null 2>&1; then
   UNSHIPPED=$(git -C "$WT_DIR" rev-list --count "$DEFAULT_BASE..HEAD") || UNSHIPPED=""
 fi
+SQUASHED=""
+if [ -n "$UNSHIPPED" ] && [ "$UNSHIPPED" -gt 0 ] && \
+   wtkit_squash_landed "$WT_DIR" "$DEFAULT_BASE" HEAD; then
+  SQUASHED="$UNSHIPPED"
+  UNSHIPPED=0
+fi
 
 # Is this branch's work contained somewhere else? That single fact decides
 # whether --force is safe, and it is the difference between a refusal the user
@@ -92,7 +98,7 @@ echo "Workspace: $N"
 echo "Worktree:  $WT_DIR"
 echo "Branch:    ${BR:-<detached>}"
 echo "Base:      $DEFAULT_BASE"
-echo "Dirty:     $DIRTY | Unshipped commits: ${UNSHIPPED:-UNKNOWN (base unresolvable)}"
+echo "Dirty:     $DIRTY | Unshipped commits: ${UNSHIPPED:-UNKNOWN (base unresolvable)}${SQUASHED:+ ($SQUASHED landed as a squash)}"
 
 # Says where the work stands, for whichever refusal is about to print it.
 say_witness() {

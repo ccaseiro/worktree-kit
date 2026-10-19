@@ -241,6 +241,26 @@ wtkit_landing_witness() {
   printf '%s' "$head"
 }
 
+# wtkit_squash_landed <root> <base> [tip]
+#   Did <tip>'s work land on <base> as one squashed commit? Returns 0 or 1.
+#
+#   A squash merge writes a new commit, so <tip> never becomes an ancestor of
+#   <base>, and every `base..tip` count stays above zero after a clean landing.
+#   This merges <tip> into <base> in memory and calls it landed only when the
+#   result is byte-for-byte <base>'s own tree. Patch-id matching (`git cherry`)
+#   is not enough: it ignores whitespace, so it called a later reindent landed.
+#   A branch with no net change reads as unlanded, so empty commits still count
+#   as work. Needs git 2.38+ for `merge-tree --write-tree`; older git reads as
+#   unlanded, which is the safe direction.
+wtkit_squash_landed() {
+  local root="${1:-.}" base="$2" tip="${3:-HEAD}" mb merged
+  [ -n "$base" ] || return 1
+  mb=$(git -C "$root" merge-base "$base" "$tip" 2>/dev/null) || return 1
+  [ "$(git -C "$root" rev-parse "$mb^{tree}")" != "$(git -C "$root" rev-parse "$tip^{tree}")" ] || return 1
+  merged=$(git -C "$root" merge-tree --write-tree "$base" "$tip" 2>/dev/null) || return 1
+  [ "$merged" = "$(git -C "$root" rev-parse "$base^{tree}")" ]
+}
+
 # wtkit_delete_remote_branch <root> <branch> <base_ref>
 #   Delete <remote>/<branch>, but only after proving the REMOTE tip is
 #   contained in <base_ref>.
