@@ -241,6 +241,24 @@ wtkit_landing_witness() {
   printf '%s' "$head"
 }
 
+# wtkit_squash_landed <root> <base> [tip]
+#   Did <tip>'s work land on <base> as one squashed commit? Returns 0 or 1.
+#
+#   A squash merge writes a new commit, so <tip> never becomes an ancestor of
+#   <base>, and every `base..tip` count stays above zero after a clean landing.
+#   This builds the commit a squash of <tip> would make on its fork point and
+#   asks `git cherry` whether <base> already holds an equivalent patch. A squash
+#   edited or conflict-resolved on the way in does not match and reads as
+#   unlanded, which is the safe direction.
+wtkit_squash_landed() {
+  local root="${1:-.}" base="$2" tip="${3:-HEAD}" mb synth
+  [ -n "$base" ] || return 1
+  mb=$(git -C "$root" merge-base "$base" "$tip" 2>/dev/null) || return 1
+  synth=$(git -C "$root" -c user.name=wtkit -c user.email=wtkit@localhost \
+          commit-tree "$tip^{tree}" -p "$mb" -m squash-probe 2>/dev/null) || return 1
+  git -C "$root" cherry "$base" "$synth" 2>/dev/null | grep -q '^-'
+}
+
 # wtkit_delete_remote_branch <root> <branch> <base_ref>
 #   Delete <remote>/<branch>, but only after proving the REMOTE tip is
 #   contained in <base_ref>.

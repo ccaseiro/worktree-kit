@@ -146,3 +146,35 @@ teardown() { wtk_teardown; }
   run remove-workspace 1 --yes
   [[ "$output" == *"Nothing else in this repo contains those commits"* ]]
 }
+
+# A squash merge writes a new commit, so the branch never becomes an ancestor
+# of its base. These pin that a clean squash still reads as landed.
+squash_fixture() {
+  wtk_mk_integration feat/something
+  wtk_set_base feat/something
+  wtk_mk_workspace 1 feat/something 0
+  echo a > "$WS/a.txt"; _git -C "$WS" add a.txt; _git -C "$WS" commit -qm "agent 1 a"
+  echo b > "$WS/b.txt"; _git -C "$WS" add b.txt; _git -C "$WS" commit -qm "agent 1 b"
+  echo base > "$REPO/base.txt"; _git -C "$REPO" add base.txt; _git -C "$REPO" commit -qm "unrelated work on the base"
+  _git -C "$REPO" merge -q --squash workspace/1
+}
+
+@test "removes cleanly once the work is squash-landed" {
+  squash_fixture
+  _git -C "$REPO" commit -qm "squash ws/1"
+  run remove-workspace 1 --yes
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"landed as a squash"* ]]
+  run wtk_has_branch workspace/1
+  [ "$status" -ne 0 ]
+}
+
+@test "a squash edited on the way in does not read as landed" {
+  squash_fixture
+  echo edit > "$REPO/a.txt"; _git -C "$REPO" add a.txt
+  _git -C "$REPO" commit -qm "squash ws/1, edited"
+  run remove-workspace 1 --yes
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"has 2 commit(s) not on feat/something"* ]]
+  wtk_has_branch workspace/1
+}
